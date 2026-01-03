@@ -59,12 +59,12 @@ private slots:
     void addVideo();
     void deleteSelectedImage();
     void clearAllImages();
-
+    void startMix(QString inputPath);
 private:
     void initUI();
     void closeEvent(QCloseEvent *event) override;
     int detectCamera();
-
+    QString extractDirPathQt(const QString& fullPath);
     // Core components
     HumanSeg *segmentor;
     cv::VideoCapture *camera;
@@ -107,7 +107,9 @@ private:
     std::string recordFilename;
     int cameraIndex;
     int cameraNumber;
-
+    int camWidth;
+    int camHeight;
+    QString savePath;
 
 
     // FPS calculation - 使用滑动时间窗口

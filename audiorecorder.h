@@ -6,6 +6,7 @@
 #include <QWidget>
 #include <QLabel>
 #include <QComboBox>
+#include <QProcess>
 QT_BEGIN_NAMESPACE
 class QAudioBuffer;
 class QMediaDevices;

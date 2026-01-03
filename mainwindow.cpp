@@ -24,7 +24,7 @@ BackgroundReplaceWindow::BackgroundReplaceWindow(QWidget *parent)
     , currentFPS(0.0f)
 {
     setWindowTitle("实时背景替换工具");
-    setFixedSize(1600, 800);
+    setFixedSize(1920, 1080);
 
     // Connect timer signals
     connect(timer, &QTimer::timeout, this, &BackgroundReplaceWindow::updateFrame);
@@ -339,17 +339,23 @@ void BackgroundReplaceWindow::toggleRecording()
             QMessageBox::information(this, "提示", "已取消录制");
             return;
         }
-
+        savePath=videoPath;
+        if(videoPath.back()=='4'){
+            videoPath=extractDirPathQt(videoPath)+"tempVideo.mp4";
+        }
+        else{
+            videoPath=extractDirPathQt(videoPath)+"tempVideo.avi";
+        }
         // ========== 开始录制 ==========
         isRecording = true;
-        audioRec->toggleRecord(videoPath);
+        audioRec->toggleRecord(extractDirPathQt(videoPath));
         recordBtn->setText("停止录制");
 
         // ========== 获取摄像头画面的分辨率（强制为640x480，确保兼容性） ==========
         try {
             // 固定FPS为30.0，分辨率为640x480，确保兼容性
-            const int width = 640;
-            const int height = 480;
+            const int width = camWidth;
+            const int height = camHeight;
             const double fps = currentFPS;
             
             // 根据用户选择的文件后缀自动选择编码格式
@@ -394,7 +400,6 @@ void BackgroundReplaceWindow::toggleRecording()
         // ========== 停止录制 ==========
         isRecording = false;
         recordBtn->setText("开始录制");
-        
         // 释放视频写入器
         if (videoWriter) {
             videoWriter->release();
@@ -402,6 +407,7 @@ void BackgroundReplaceWindow::toggleRecording()
             videoWriter = nullptr;
         }
         audioRec->saveAudio();
+        startMix(savePath);
         // 显示录制完成信息
         QString fullPath = QFileInfo(QString::fromStdString(recordFilename)).absoluteFilePath();
         QMessageBox::information(this, "成功", 
@@ -627,9 +633,11 @@ void BackgroundReplaceWindow::toggleCamera()
             QMessageBox::critical(this, "错误", "无法打开摄像头！");
             return;
         }
-        camera->set(cv::CAP_PROP_FRAME_WIDTH, 680);
-        camera->set(cv::CAP_PROP_FRAME_HEIGHT, 480);
-        timer->start(33);
+        camWidth = static_cast<int>(camera->get(cv::CAP_PROP_FRAME_WIDTH));
+        camHeight = static_cast<int>(camera->get(cv::CAP_PROP_FRAME_HEIGHT));
+        camera->set(cv::CAP_PROP_FRAME_WIDTH, camWidth);
+        camera->set(cv::CAP_PROP_FRAME_HEIGHT, camHeight);
+        timer->start(22);
         btnCamera->setText("停止摄像头");
         
         // Reset FPS calculation
@@ -637,7 +645,16 @@ void BackgroundReplaceWindow::toggleCamera()
         currentFPS = 0.0f;
     }
 }
-
+QString BackgroundReplaceWindow::extractDirPathQt(const QString& fullPath) {
+    if (fullPath.isEmpty()) {
+        return "./";
+    }
+    // QFileInfo：解析文件路径的工具类
+    QFileInfo fileInfo(fullPath);
+    // absolutePath()：获取目录路径（无末尾分隔符），再用QDir补充分隔符
+    QString dirPath = QDir(fileInfo.absolutePath()).absolutePath() + QDir::separator();
+    return dirPath;
+}
 void BackgroundReplaceWindow::updateFrame()
 {
     if (!camera || !camera->isOpened()) {
@@ -655,7 +672,6 @@ void BackgroundReplaceWindow::updateFrame()
 
     if (imageListWidget->currentItem()) {
         QString selectedPath = imageListWidget->currentItem()->data(Qt::UserRole).toString();
-
         try {
             if (radioImg->isChecked()) {
                 segmentor->setBackground(selectedPath.toStdString(), "image");
@@ -775,10 +791,63 @@ void BackgroundReplaceWindow::closeEvent(QCloseEvent *event)
 
     event->accept();
 }
+void BackgroundReplaceWindow::startMix(QString inputPath)
+{
+    QString basePath=extractDirPathQt(inputPath);
+    QString ffmpegPath = "ffmpeg-master-latest-win64-gpl-shared/bin/ffmpeg.exe";
+    // 构造 FFmpeg 命令（替换视频音频，裁剪到最短时长）
+    QStringList args;
+    args << "-i" <<  (inputPath.back() == '4' ? basePath+"tempVideo.mp4" : basePath+"tempVideo.avi") // 输入视频
+         << "-i" <<  basePath+"tempAudio.mp4a"     // 输入音频
+         << "-map" << "0:v"              // 选择视频流
+         << "-map" << "1:a"              // 选择音频流
+         << "-c:v" << "copy"             // 视频拷贝
+         << "-c:a" << "aac"              // 音频编码为 AAC
+         << "-shortest"                  // 裁剪到最短时长
+         << "-y"                         // 覆盖已有文件
+         << inputPath;                  // 输出文件
+    // 启动 FFmpeg 进程
+    QProcess *ffmpegProcess = new QProcess();
+    connect(ffmpegProcess, &QProcess::finished, this, [=](int exitCode, QProcess::ExitStatus exitStatus) {
+        if (exitCode == 0) {
+            qDebug()<<"混合成功！";
+            QFile videoFile( (inputPath.back() == '4' ? basePath+"tempVideo.mp4" : basePath+"tempVideo.avi"));
+            QFile audioFile(basePath+"tempAudio.mp4a");
 
+            // 视频文件删除
+            if (videoFile.exists()) {
+                if (!videoFile.remove()) {
+                    QMessageBox::warning(this, "提示",
+                                         "视频文件删除失败");
+                }
+            }
+
+            // 音频文件删除
+            if (audioFile.exists()) {
+                if (!audioFile.remove()) {
+                    QMessageBox::warning(this, "提示",
+                                         "音频文件删除失败：");
+                }
+            }
+        } else {
+            // 输出错误信息
+            QString error = ffmpegProcess->readAllStandardError();
+            qDebug()<<"----MiX-ERROR----\n"<<error;
+        }
+        ffmpegProcess->deleteLater();
+    });
+
+    // 启动进程
+    ffmpegProcess->start(ffmpegPath, args);
+
+    // 检查 FFmpeg 是否启动成功
+    if (!ffmpegProcess->waitForStarted(3000)) {
+        QMessageBox::critical(this, "错误", "无法启动 FFmpeg，请检查路径是否正确！");
+        ffmpegProcess->deleteLater();
+    }
+}
 int BackgroundReplaceWindow::detectCamera()
 {
-     qDebug() << "正在检测摄像头设备..." << '\n';
     int i = 0;
     while (true) {
         cv::VideoCapture cap(i, cv::CAP_DSHOW);

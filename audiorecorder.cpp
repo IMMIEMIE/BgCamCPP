@@ -65,6 +65,7 @@ void audioRecorder::initUI()
 }
 void audioRecorder::toggleRecord(QString audioPath)
 {
+    audioPath += "tempAudio";
     if (!m_audioRecorder) {
         return;
     }
@@ -83,12 +84,6 @@ void audioRecorder::toggleRecord(QString audioPath)
     }
 }
 void audioRecorder::saveAudio(){
-    if(m_audioRecorder->recorderState() == QMediaRecorder::StoppedState){
-        qDebug()<<"又没录上！";
-    }
-    else{
-        qDebug()<<"录上了！";
-    }
     m_audioRecorder->stop();
 }
 void audioRecorder::updateDevices()

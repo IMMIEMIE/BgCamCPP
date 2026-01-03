@@ -81,6 +81,7 @@ public:
         return this->bg_type;
     }
 private:
+    bool isContainChineseUTF8(const std::string& utf8Str);
     /**
      * @brief 获取适配尺寸的背景帧
      * @param target_size 目标尺寸 (height, width)
@@ -118,7 +119,6 @@ private:
     int titleY = 10;
     int font_size = 40;
     std::tuple<int, int, int> rgb = {0, 0, 0}; // 默认黑色
-    bool isContainChineseUTF8(const std::string& utf8Str);
 };
 
 #endif // HUMANSEG_H
