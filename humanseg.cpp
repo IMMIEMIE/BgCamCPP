@@ -222,47 +222,91 @@ void HumanSeg::release() {
 
 // 读取带中文路径的图片
 cv::Mat HumanSeg::imreadChinese(const std::string& path, int flags) {
-    std::filesystem::path fs_path(path);
-    std::ifstream file(fs_path, std::ios::binary);
-    // 2. 检查文件是否成功打开
-    if (!file.is_open()) {
-        return {}; // 返回空矩阵
-    }
-
-    // 3. 将文件的全部内容读入内存缓冲区 (vector<uchar>)
-    // (使用 istreambuf_iterator "流" 式读取)
-    const std::vector<uchar> buffer(std::istreambuf_iterator<char>(file), {});
-    file.close();
-
-    // 4. 检查缓冲区是否为空（文件是否为空或读取失败）
-    if (buffer.empty()) {
-        std::cerr << "Error: [imread_unicode] 文件为空: " << fs_path << std::endl;
-        return {}; // 返回空矩阵
-    }
-
-    // 5. 使用 cv::imdecode 从内存缓冲区解码图像
-    try {
-        cv::Mat img = cv::imdecode(buffer, flags);
-        if (img.empty()) {
-            std::cerr << "Error: [imread_unicode] cv::imdecode 解码失败 (图像为空): " << fs_path << std::endl;
+    if(isContainChineseUTF8(path)){
+        std::filesystem::path fs_path(path);
+        std::ifstream file(fs_path, std::ios::binary);
+        // 2. 检查文件是否成功打开
+        if (!file.is_open()) {
+            return {}; // 返回空矩阵
         }
-        return img;
-    } catch (const cv::Exception& ex) {
-        std::cerr << "Error: [imread_unicode] cv::imdecode 失败: " << ex.what() << std::endl;
-        return {};
+
+        // 3. 将文件的全部内容读入内存缓冲区 (vector<uchar>)
+        // (使用 istreambuf_iterator "流" 式读取)
+        const std::vector<uchar> buffer(std::istreambuf_iterator<char>(file), {});
+        file.close();
+
+        // 4. 检查缓冲区是否为空（文件是否为空或读取失败）
+        if (buffer.empty()) {
+            std::cerr << "Error: [imread_unicode] 文件为空: " << fs_path << std::endl;
+            return {}; // 返回空矩阵
+        }
+
+        // 5. 使用 cv::imdecode 从内存缓冲区解码图像
+        try {
+            cv::Mat img = cv::imdecode(buffer, flags);
+            if (img.empty()) {
+                std::cerr << "Error: [imread_unicode] cv::imdecode 解码失败 (图像为空): " << fs_path << std::endl;
+            }
+            return img;
+        } catch (const cv::Exception& ex) {
+            std::cerr << "Error: [imread_unicode] cv::imdecode 失败: " << ex.what() << std::endl;
+            return {};
+        }
     }
-    //----------------------------------------------------------
-    // std::wstring wpath(path.begin(), path.end());
-    // FILE* fp = _wfopen(wpath.c_str(), L"rb");
-    // if (!fp) {
-    //     return cv::Mat();
-    // }
-    // fseek(fp, 0, SEEK_END);
-    // long size = ftell(fp);
-    // fseek(fp, 0, SEEK_SET);
-    // std::vector<char> buf(size);
-    // fread(buf.data(), 1, size, fp);
-    // fclose(fp);
-    // // 解码为Mat
-    // return cv::imdecode(cv::Mat(buf), flags);
+    else{
+        std::wstring wpath(path.begin(), path.end());
+        FILE* fp = _wfopen(wpath.c_str(), L"rb");
+        if (!fp) {
+            return cv::Mat();
+        }
+        fseek(fp, 0, SEEK_END);
+        long size = ftell(fp);
+        fseek(fp, 0, SEEK_SET);
+        std::vector<char> buf(size);
+        fread(buf.data(), 1, size, fp);
+        fclose(fp);
+        // 解码为Mat
+        return cv::imdecode(cv::Mat(buf), flags);
+    }
+}
+bool isContainChineseUTF8(const std::string& utf8Str) {
+    const uint8_t* p = reinterpret_cast<const uint8_t*>(utf8Str.c_str());
+    size_t len = utf8Str.size();
+    size_t i = 0;
+
+    while (i < len) {
+        // 1. 跳过ASCII字符（0x00~0x7F）
+        if (p[i] < 0x80) {
+            i++;
+            continue;
+        }
+
+        // 2. 检测UTF-8多字节序列（仅处理3字节的中文范围）
+        // UTF-8 3字节格式：1110xxxx 10xxxxxx 10xxxxxx
+        if ((p[i] >= 0xE4 && p[i] <= 0xE9) && (i + 2 < len)) {
+            // 验证后续2个字节是否符合UTF-8格式（10xxxxxx）
+            if ((p[i+1] >= 0x80 && p[i+1] <= 0xBF) && (p[i+2] >= 0x80 && p[i+2] <= 0xBF)) {
+                // 计算对应的Unicode码点，验证是否在中文范围（0x4E00~0x9FFF）
+                uint32_t unicode = ((p[i] & 0x0F) << 12) | ((p[i+1] & 0x3F) << 6) | (p[i+2] & 0x3F);
+                if (unicode >= 0x4E00 && unicode <= 0x9FFF) {
+                    return true;
+                }
+                i += 3;
+                continue;
+            }
+        }
+
+        // 3. 处理其他UTF-8多字节（非中文，如emoji、日文等）
+        if (p[i] >= 0xF0) { // 4字节UTF-8（跳过）
+            i += 4;
+        } else if (p[i] >= 0xE0) { // 3字节UTF-8（已处理中文，此处跳过）
+            i += 3;
+        } else if (p[i] >= 0xC0) { // 2字节UTF-8（非中文）
+            i += 2;
+        } else { // 无效UTF-8字节（跳过）
+            i++;
+        }
+    }
+
+    return false;
 }

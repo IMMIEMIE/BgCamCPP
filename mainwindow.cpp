@@ -256,7 +256,7 @@ void BackgroundReplaceWindow::initUI()
 
     QPushButton *colorBtn = new QPushButton("选择颜色");
     connect(colorBtn, &QPushButton::clicked, this, &BackgroundReplaceWindow::chooseColor);
-
+    audioRec =new audioRecorder();
     recordBtn = new QPushButton("开始录制");
     connect(recordBtn, &QPushButton::clicked, this, &BackgroundReplaceWindow::toggleRecording);
 
@@ -265,6 +265,7 @@ void BackgroundReplaceWindow::initUI()
     camGroupLayout->addLayout(posXLayout);
     camGroupLayout->addLayout(posYLayout);
     camGroupLayout->addLayout(fsLayout);
+    camGroupLayout->addWidget(audioRec);
     camGroupLayout->addWidget(colorBtn);
     camGroupLayout->addWidget(recordBtn);
     camGroupLayout->addStretch(1);
@@ -317,64 +318,96 @@ void BackgroundReplaceWindow::chooseColor()
 
 void BackgroundReplaceWindow::toggleRecording()
 {
+    // ========== 检查摄像头是否已启动 ==========
     if (!camera || !camera->isOpened()) {
         QMessageBox::warning(this, "警告", "请先启动摄像头再录制！");
         return;
     }
 
     if (!isRecording) {
-        QString fileName = QFileDialog::getSaveFileName(
-            this,
-            "选择视频保存位置",
-            QDir::currentPath() + "/output_video.mp4",
-            "MP4 视频 (*.mp4);;AVI 视频 (*.avi);;所有文件 (*.*)"
-            );
-
-        if (fileName.isEmpty()) {
+        // ========== 弹出保存对话框，让用户选择路径和文件名 ==========
+        QString defaultPath = QDir::currentPath() + "/output_video.mp4";
+        QString videoPath = QFileDialog::getSaveFileName(
+            this,  // 父窗口
+            "选择视频保存位置",  // 对话框标题
+            defaultPath,  // 默认路径和文件名
+            "MP4 视频 (*.mp4);;AVI 视频 (*.avi);;所有文件 (*.*)"  // 支持的文件格式
+        );
+        
+        // 处理用户取消选择的情况
+        if (videoPath.isEmpty()) {
             QMessageBox::information(this, "提示", "已取消录制");
             return;
         }
 
+        // ========== 开始录制 ==========
         isRecording = true;
+        audioRec->toggleRecord(videoPath);
         recordBtn->setText("停止录制");
 
-        // 设置视频录制参数
-        double fps = 30.0; // 固定30fps确保稳定性
-        int width = 960;
-        int height = 560;
+        // ========== 获取摄像头画面的分辨率（强制为640x480，确保兼容性） ==========
+        try {
+            // 固定FPS为30.0，分辨率为640x480，确保兼容性
+            const int width = 640;
+            const int height = 480;
+            const double fps = currentFPS;
+            
+            // 根据用户选择的文件后缀自动选择编码格式
+            QFileInfo fileInfo(videoPath);
+            QString extension = fileInfo.suffix().toLower();
+            
+            int fourcc;
+            if (extension == "avi") {
+                fourcc = cv::VideoWriter::fourcc('X', 'V', 'I', 'D');  // AVI编码
+            } else {
+                fourcc = cv::VideoWriter::fourcc('m', 'p', '4', 'v');  // 默认MP4编码
+            }
 
-        int fourcc;
-        if (fileName.toLower().endsWith(".avi")) {
-            fourcc = cv::VideoWriter::fourcc('X', 'V', 'I', 'D');
-        } else {
-            fourcc = cv::VideoWriter::fourcc('m', 'p', '4', 'v');
-        }
-
-        recordFilename = fileName.toStdString();
-        videoWriter = new cv::VideoWriter(recordFilename, fourcc, fps, cv::Size(width, height));
-
-        if (!videoWriter->isOpened()) {
-            QMessageBox::critical(this, "错误", "视频写入器创建失败，请检查路径权限或编码格式");
+            // ========== 创建VideoWriter ==========
+            videoWriter = new cv::VideoWriter(
+                videoPath.toStdString(),
+                fourcc,
+                fps,
+                cv::Size(width, height)
+            );
+            
+            if (!videoWriter->isOpened()) {
+                throw std::runtime_error("视频写入器创建失败，请检查路径权限或编码格式");
+            }
+            
+            recordFilename = videoPath.toStdString();
+            qDebug() << "开始录制：" << videoPath << '\n';
+            qDebug() << "FPS：" << fps << "，分辨率：" << width << "x" << height << '\n';
+            
+        } catch (const std::exception &e) {
+            QMessageBox::critical(this, "错误", QString("创建录制文件失败：%1").arg(e.what()));
             isRecording = false;
             recordBtn->setText("开始录制");
-            delete videoWriter;
-            videoWriter = nullptr;
+            if (videoWriter) {
+                delete videoWriter;
+                videoWriter = nullptr;
+            }
             return;
         }
-
-        QMessageBox::information(this, "录制开始", "视频录制已开始！");
+        
     } else {
+        // ========== 停止录制 ==========
         isRecording = false;
         recordBtn->setText("开始录制");
-
-        // 停止视频录制
+        
+        // 释放视频写入器
         if (videoWriter) {
             videoWriter->release();
             delete videoWriter;
             videoWriter = nullptr;
         }
-
-        QMessageBox::information(this, "录制完成", "录制完成！文件保存为：" + QString::fromStdString(recordFilename));
+        audioRec->saveAudio();
+        // 显示录制完成信息
+        QString fullPath = QFileInfo(QString::fromStdString(recordFilename)).absoluteFilePath();
+        QMessageBox::information(this, "成功", 
+                               QString("录制完成！视频已保存至：\n%1").arg(fullPath));
+        
+        qDebug() << "录制已停止，文件保存至：" << fullPath << '\n';
     }
 }
 
@@ -594,8 +627,8 @@ void BackgroundReplaceWindow::toggleCamera()
             QMessageBox::critical(this, "错误", "无法打开摄像头！");
             return;
         }
-        camera->set(cv::CAP_PROP_FRAME_WIDTH, 960);
-        camera->set(cv::CAP_PROP_FRAME_HEIGHT, 560);
+        camera->set(cv::CAP_PROP_FRAME_WIDTH, 680);
+        camera->set(cv::CAP_PROP_FRAME_HEIGHT, 480);
         timer->start(33);
         btnCamera->setText("停止摄像头");
         
@@ -645,11 +678,22 @@ void BackgroundReplaceWindow::updateFrame()
     }
 
     if (isRecording && videoWriter) {
-        cv::Mat writeFrame;
-        cv::resize(outputFrame, writeFrame,
-                   cv::Size(static_cast<int>(camera->get(cv::CAP_PROP_FRAME_WIDTH)),
-                            static_cast<int>(camera->get(cv::CAP_PROP_FRAME_HEIGHT))));
-        videoWriter->write(writeFrame);
+        // 检查帧是否有效
+        if (!outputFrame.empty() && outputFrame.cols > 0 && outputFrame.rows > 0) {
+            cv::Mat writeFrame;
+            
+            // 将帧调整为640x480以匹配VideoWriter的配置
+            cv::resize(outputFrame, writeFrame, cv::Size(640, 480));
+            
+            // 确保帧格式正确 (BGR格式)
+            if (writeFrame.channels() == 3) {
+                videoWriter->write(writeFrame);
+            } else {
+                qDebug() << "警告：帧格式不正确，跳过此帧录制" << '\n';
+            }
+        } else {
+            qDebug() << "警告：输出帧为空，跳过录制" << '\n';
+        }
     }
 
     cv::Mat rgbFrame;

@@ -30,7 +30,7 @@
 #include <string>
 #include "HumanSeg.h"
 #include "PreviewWidget.h"
-
+#include "audiorecorder.h"
 class BackgroundReplaceWindow : public QMainWindow
 {
     Q_OBJECT
@@ -96,6 +96,7 @@ private:
     QSpinBox *posXInput;
     QSpinBox *posYInput;
     QSpinBox *fsInput;
+    audioRecorder *audioRec;
 
     // Data
     std::vector<std::string> imagePaths;

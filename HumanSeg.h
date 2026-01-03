@@ -118,6 +118,7 @@ private:
     int titleY = 10;
     int font_size = 40;
     std::tuple<int, int, int> rgb = {0, 0, 0}; // 默认黑色
+    bool isContainChineseUTF8(const std::string& utf8Str);
 };
 
 #endif // HUMANSEG_H
