@@ -3,6 +3,7 @@
 #include <fstream>
 #include <algorithm>
 #include <numeric>
+#include <thread>
 HumanSeg::HumanSeg(float conf_thres) : conf_threshold(conf_thres) {
     // 初始化均值和标准差
     mean = (cv::Mat_<float>(1, 3) << 0.5, 0.5, 0.5);
@@ -11,20 +12,23 @@ HumanSeg::HumanSeg(float conf_thres) : conf_threshold(conf_thres) {
     try {
         const ORTCHAR_T* model_path = L"modnet.onnx";
         Ort::SessionOptions session_options;
-        session_options.SetIntraOpNumThreads(16);
+        unsigned int hw = std::thread::hardware_concurrency();
+        if (hw > 0) {
+            session_options.SetIntraOpNumThreads(static_cast<int>(hw));
+        }
         session_options.SetGraphOptimizationLevel(GraphOptimizationLevel::ORT_ENABLE_EXTENDED);
         std::vector<std::string> available_providers = Ort::GetAvailableProviders();
         bool use_cuda = false;
-        for (const auto& provider : available_providers) {
-            if (provider == "CUDAExecutionProvider") {
-                OrtCUDAProviderOptions cuda_options;
-                memset(&cuda_options, 0, sizeof(OrtCUDAProviderOptions)); // 初始化默认值
-                cuda_options.device_id = 0;
-                session_options.AppendExecutionProvider_CUDA(cuda_options);
-                use_cuda = true;
-                break;
-            }
-        }
+        // for (const auto& provider : available_providers) {
+        //     if (provider == "CUDAExecutionProvider") {
+        //         OrtCUDAProviderOptions cuda_options;
+        //         memset(&cuda_options, 0, sizeof(OrtCUDAProviderOptions)); // 初始化默认值
+        //         cuda_options.device_id = 0;
+        //         session_options.AppendExecutionProvider_CUDA(cuda_options);
+        //         use_cuda = true;
+        //         break;
+        //     }
+        // }
         if (!use_cuda) {
             qDebug() << "CPUMODE\n";
         }
@@ -184,7 +188,7 @@ cv::Mat HumanSeg::segmentAndReplace(const cv::Mat& frame) {
     cv::bitwise_and(bg_frame, ~person_mask_3ch, bg_part);  // 背景区域（~0=255）保留背景帧，人像（~255=0）为黑
     cv::add(output_frame, bg_part, output_frame); // 叠加后：人像+新背景
     if (!title.empty()) {
-        putText::putTextZH(output_frame,title.c_str(),Point(titleX,titleY),Scalar(std::get<2>(rgb), std::get<1>(rgb), std::get<0>(rgb)),font_size,"微软雅黑");
+        putText::putTextZH(output_frame,title.c_str(),Point(titleX,titleY),Scalar(std::get<2>(rgb), std::get<1>(rgb), std::get<0>(rgb)),font_size,font_name.c_str());
     }
 
     return output_frame;

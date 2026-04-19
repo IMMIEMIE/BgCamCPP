@@ -16,7 +16,10 @@
 #include <QListWidget>
 #include <QListWidgetItem>
 #include <QComboBox>
+#include <QPlainTextEdit>
+#include <QFontComboBox>
 #include <QLineEdit>
+#include <QStackedLayout>
 #include <QColorDialog>
 #include <QTimer>
 #include <QDateTime>
@@ -25,6 +28,8 @@
 #include <QColor>
 #include <QDir>
 #include <QCloseEvent>
+#include <QKeyEvent>
+#include <QShortcut>
 
 #include <vector>
 #include <string>
@@ -57,14 +62,29 @@ private slots:
     void videoMode();
     void addImages();
     void addVideo();
+    void addFgImage();
+    void clearFgImage();
+    void chooseSaveDirectory();
+    void updateFgScale(int value);
+    void updateFgOpacity(int value);
     void deleteSelectedImage();
     void clearAllImages();
     void startMix(QString inputPath);
+protected:
+    void keyPressEvent(QKeyEvent *event) override;
+
 private:
     void initUI();
     void closeEvent(QCloseEvent *event) override;
     int detectCamera();
     QString extractDirPathQt(const QString& fullPath);
+    void drawForeground(cv::Mat &frame);
+    void toggleFullScreenPreview();
+    void moveForegroundBy(int dx, int dy);
+    void adjustForegroundScale(int delta);
+    void resetForegroundPosition();
+    void updateRecordingStatusOverlay();
+    
     // Core components
     HumanSeg *segmentor;
     cv::VideoCapture *camera;
@@ -73,7 +93,14 @@ private:
 
     // UI elements
     QWidget *centralWidget;
+    QHBoxLayout *mainLayout;
+    QWidget *leftWidgetPanel;
+    QWidget *camWidget;
+    QWidget *rightWidgetPanel;
+    QGroupBox *cameraGroupBox;
+    QStackedLayout *previewStackLayout;
     QLabel *cameraLabel;
+    QLabel *recordStatusLabel;
     QLabel *fpsLabel;
     QPushButton *btnCamera;
     QPushButton *btnTimer;
@@ -92,17 +119,35 @@ private:
     QRadioButton *radioVideo;
     QButtonGroup *bgTypeGroup;
     QComboBox *comboBox;
-    QLineEdit *titleInputBox;
+    QPlainTextEdit *titleInputBox;
+    QFontComboBox *fontComboBox;
+    QLineEdit *saveDirInput;
+    QPushButton *btnBrowseSaveDir;
     QSpinBox *posXInput;
     QSpinBox *posYInput;
     QSpinBox *fsInput;
     audioRecorder *audioRec;
 
+    QPushButton *btnAddFgImage;
+    QPushButton *btnClearFgImage;
+    QSlider *fgScaleSlider;
+    QSlider *fgOpacitySlider;
+    
     // Data
+    cv::Mat fgImage;
+    int fgX;
+    int fgY;
+    double fgScale;
+    double fgOpacity;
+
     std::vector<std::string> imagePaths;
     int imgIndex;
     int carouselInterval;
     bool isRecording;
+    bool isPreviewFullScreen;
+    qint64 recordStartTime;
+    int writtenFrames;
+    const double RECORD_FPS = 30.0;
     cv::VideoWriter *videoWriter;
     std::string recordFilename;
     int cameraIndex;
@@ -110,6 +155,7 @@ private:
     int camWidth;
     int camHeight;
     QString savePath;
+    QString currentBgPath;
 
 
     // FPS calculation - 使用滑动时间窗口

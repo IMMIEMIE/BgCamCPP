@@ -18,13 +18,19 @@ BackgroundReplaceWindow::BackgroundReplaceWindow(QWidget *parent)
     , imgIndex(0)
     , carouselInterval(5)
     , isRecording(false)
+    , isPreviewFullScreen(false)
+    , recordStartTime(0)
     , videoWriter(nullptr)
     , cameraIndex(0)
-
+    , currentBgPath("")
     , currentFPS(0.0f)
+    , fgX(0)
+    , fgY(0)
+    , fgScale(1.0)
+    , fgOpacity(1.0)
 {
     setWindowTitle("实时背景替换工具");
-    setFixedSize(1920, 1080);
+    setFixedSize(1800, 800);
 
     // Connect timer signals
     connect(timer, &QTimer::timeout, this, &BackgroundReplaceWindow::updateFrame);
@@ -67,13 +73,13 @@ void BackgroundReplaceWindow::initUI()
 
     cameraNumber = detectCamera();
 
-    QHBoxLayout *mainLayout = new QHBoxLayout(centralWidget);
+    mainLayout = new QHBoxLayout(centralWidget);
     mainLayout->setContentsMargins(10, 10, 10, 10);
     mainLayout->setSpacing(10);
 
     // Left control panel
-    QWidget *leftWidget = new QWidget();
-    QVBoxLayout *leftLayout = new QVBoxLayout(leftWidget);
+    leftWidgetPanel = new QWidget();
+    QVBoxLayout *leftLayout = new QVBoxLayout(leftWidgetPanel);
     leftLayout->setContentsMargins(5, 5, 5, 5);
     leftLayout->setSpacing(8);
 
@@ -144,11 +150,6 @@ void BackgroundReplaceWindow::initUI()
     sliderLayout->addWidget(confSlider);
     controlLayout->addLayout(sliderLayout);
 
-    // Camera start/stop button
-    btnCamera = new QPushButton("启动摄像头");
-    connect(btnCamera, &QPushButton::clicked, this, &BackgroundReplaceWindow::toggleCamera);
-    controlLayout->addWidget(btnCamera);
-
     // FPS display
     fpsLabel = new QLabel("FPS: 0.0");
     fpsLabel->setAlignment(Qt::AlignCenter);
@@ -172,30 +173,64 @@ void BackgroundReplaceWindow::initUI()
     // Image preview
     QGroupBox *previewGroup = new QGroupBox("图片预览");
     QVBoxLayout *previewLayout = new QVBoxLayout(previewGroup);
+    previewGroup->setFixedSize(380, 300);
     imagePreviewWidget = new ImagePreviewWidget();
-    imagePreviewWidget->setMinimumHeight(200);
-    previewLayout->addWidget(imagePreviewWidget);
+    imagePreviewWidget->setFixedSize(360, 250);
+    previewLayout->addWidget(imagePreviewWidget, 0, Qt::AlignCenter);
     leftLayout->addWidget(previewGroup);
     leftLayout->addWidget(listGroup);
     leftLayout->addStretch();
 
     // Middle camera display area
-    QWidget *camWidget = new QWidget();
+    camWidget = new QWidget();
     QVBoxLayout *camLayout = new QVBoxLayout(camWidget);
     camLayout->setContentsMargins(5, 5, 5, 5);
 
-    QGroupBox *cameraGroup = new QGroupBox("摄像头预览（背景替换）");
-    QVBoxLayout *cameraLayout = new QVBoxLayout(cameraGroup);
+    cameraGroupBox = new QGroupBox("摄像头预览（F11全屏/退出全屏）");
+    QVBoxLayout *cameraLayout = new QVBoxLayout(cameraGroupBox);
+
+    QWidget *previewContainer = new QWidget();
+    previewStackLayout = new QStackedLayout(previewContainer);
+    previewStackLayout->setStackingMode(QStackedLayout::StackAll);
+    previewStackLayout->setContentsMargins(0, 0, 0, 0);
 
     cameraLabel = new QLabel();
     cameraLabel->setAlignment(Qt::AlignCenter);
-    cameraLabel->setStyleSheet("border: 1px solid red; min-height: 550px;max-height: 550px;");
-    cameraLayout->addWidget(cameraLabel);
-    camLayout->addWidget(cameraGroup);
+    cameraLabel->setStyleSheet("min-height: 550px;max-height: 550px;");
+    previewStackLayout->addWidget(cameraLabel);
+
+    QWidget *overlayLayer = new QWidget();
+    overlayLayer->setAttribute(Qt::WA_TransparentForMouseEvents, true);
+    QVBoxLayout *overlayRootLayout = new QVBoxLayout(overlayLayer);
+    overlayRootLayout->setContentsMargins(12, 12, 12, 12);
+    overlayRootLayout->addWidget(new QWidget(), 1);
+
+    QHBoxLayout *overlayTopLayout = new QHBoxLayout();
+    overlayTopLayout->addStretch();
+    recordStatusLabel = new QLabel();
+    recordStatusLabel->setAlignment(Qt::AlignRight | Qt::AlignVCenter);
+    recordStatusLabel->setVisible(false);
+    recordStatusLabel->setStyleSheet(
+        "QLabel {"
+        "color: white;"
+        "background-color: rgba(18, 18, 18, 180);"
+        "border: 1px solid rgba(255, 255, 255, 35);"
+        "border-radius: 12px;"
+        "padding: 8px 14px;"
+        "font-size: 14px;"
+        "font-weight: 600;"
+        "}"
+    );
+    overlayTopLayout->addWidget(recordStatusLabel, 0, Qt::AlignTop | Qt::AlignRight);
+    overlayRootLayout->insertLayout(0, overlayTopLayout);
+    previewStackLayout->addWidget(overlayLayer);
+
+    cameraLayout->addWidget(previewContainer);
+    camLayout->addWidget(cameraGroupBox);
 
     // Right camera settings + recording settings
-    QWidget *rightWidget = new QWidget();
-    QVBoxLayout *rightLayout = new QVBoxLayout(rightWidget);
+    rightWidgetPanel = new QWidget();
+    QVBoxLayout *rightLayout = new QVBoxLayout(rightWidgetPanel);
     rightLayout->setContentsMargins(5, 5, 5, 5);
     rightLayout->setSpacing(8);
 
@@ -218,11 +253,37 @@ void BackgroundReplaceWindow::initUI()
 
     QHBoxLayout *textLayout = new QHBoxLayout();
     QLabel *inputLabel = new QLabel("宣誓标语：");
-    titleInputBox = new QLineEdit();
-    connect(titleInputBox, &QLineEdit::textChanged,
-            this, &BackgroundReplaceWindow::onTextChanged);
+    titleInputBox = new QPlainTextEdit();
+    titleInputBox->setMaximumHeight(80);
+    connect(titleInputBox, &QPlainTextEdit::textChanged,
+            this, [this]() {
+                onTextChanged(titleInputBox->toPlainText());
+            });
     textLayout->addWidget(inputLabel);
     textLayout->addWidget(titleInputBox);
+
+    QHBoxLayout *fontLayout = new QHBoxLayout();
+    QLabel *fontLabel = new QLabel("字体选择：");
+    fontComboBox = new QFontComboBox();
+    connect(fontComboBox, &QFontComboBox::currentFontChanged,
+            this, [this](const QFont &font) {
+                segmentor->setFontName(font.family().toStdString());
+            });
+    fontLayout->addWidget(fontLabel);
+    fontLayout->addWidget(fontComboBox);
+
+    QHBoxLayout *saveDirLayout = new QHBoxLayout();
+    QLabel *saveDirLabel = new QLabel("保存目录：");
+    saveDirInput = new QLineEdit();
+    saveDirInput->setReadOnly(true);
+    saveDirInput->setPlaceholderText("请选择视频保存目录");
+    saveDirInput->setText(QStandardPaths::writableLocation(QStandardPaths::MoviesLocation));
+    saveDirInput->setToolTip(saveDirInput->text());
+    btnBrowseSaveDir = new QPushButton("选择...");
+    connect(btnBrowseSaveDir, &QPushButton::clicked, this, &BackgroundReplaceWindow::chooseSaveDirectory);
+    saveDirLayout->addWidget(saveDirLabel);
+    saveDirLayout->addWidget(saveDirInput, 1);
+    saveDirLayout->addWidget(btnBrowseSaveDir);
 
     QHBoxLayout *posXLayout = new QHBoxLayout();
     QLabel *posXLabel = new QLabel("左右位置：");
@@ -254,28 +315,334 @@ void BackgroundReplaceWindow::initUI()
     fsLayout->addWidget(fsLabel);
     fsLayout->addWidget(fsInput);
 
-    QPushButton *colorBtn = new QPushButton("选择颜色");
+    QPushButton *colorBtn = new QPushButton("选择文字颜色");
     connect(colorBtn, &QPushButton::clicked, this, &BackgroundReplaceWindow::chooseColor);
     audioRec =new audioRecorder();
     recordBtn = new QPushButton("开始录制");
     connect(recordBtn, &QPushButton::clicked, this, &BackgroundReplaceWindow::toggleRecording);
 
+    // Camera start/stop button
+    btnCamera = new QPushButton("启动摄像头");
+    connect(btnCamera, &QPushButton::clicked, this, &BackgroundReplaceWindow::toggleCamera);
+
+    // Foreground image group
+    QGroupBox *fgGroup = new QGroupBox("前景图片设置");
+    QVBoxLayout *fgLayout = new QVBoxLayout(fgGroup);
+
+    btnAddFgImage = new QPushButton("添加前景图片");
+    connect(btnAddFgImage, &QPushButton::clicked, this, &BackgroundReplaceWindow::addFgImage);
+    fgLayout->addWidget(btnAddFgImage);
+
+    btnClearFgImage = new QPushButton("清空前景图片");
+    btnClearFgImage->setEnabled(false);
+    connect(btnClearFgImage, &QPushButton::clicked, this, &BackgroundReplaceWindow::clearFgImage);
+    fgLayout->addWidget(btnClearFgImage);
+
+    QHBoxLayout *fgScaleLayout = new QHBoxLayout();
+    fgScaleLayout->addWidget(new QLabel("缩放:"));
+    fgScaleSlider = new QSlider(Qt::Horizontal);
+    fgScaleSlider->setRange(10, 300); // 0.1x to 3.0x
+    fgScaleSlider->setValue(100);
+    fgScaleSlider->setEnabled(false);
+    connect(fgScaleSlider, &QSlider::valueChanged, this, &BackgroundReplaceWindow::updateFgScale);
+    fgScaleLayout->addWidget(fgScaleSlider);
+    fgLayout->addLayout(fgScaleLayout);
+
+    QHBoxLayout *fgOpacityLayout = new QHBoxLayout();
+    fgOpacityLayout->addWidget(new QLabel("透明度:"));
+    fgOpacitySlider = new QSlider(Qt::Horizontal);
+    fgOpacitySlider->setRange(0, 100); // 0.0 to 1.0
+    fgOpacitySlider->setValue(100);
+    fgOpacitySlider->setEnabled(false);
+    connect(fgOpacitySlider, &QSlider::valueChanged, this, &BackgroundReplaceWindow::updateFgOpacity);
+    fgOpacityLayout->addWidget(fgOpacitySlider);
+    fgLayout->addLayout(fgOpacityLayout);
+
+    auto bindForegroundShortcut = [this](const QKeySequence &sequence, const std::function<void()> &handler) {
+        QShortcut *shortcut = new QShortcut(sequence, this);
+        shortcut->setContext(Qt::ApplicationShortcut);
+        connect(shortcut, &QShortcut::activated, this, handler);
+    };
+    bindForegroundShortcut(QKeySequence(Qt::Key_Up), [this]() { moveForegroundBy(0, -10); });
+    bindForegroundShortcut(QKeySequence(Qt::Key_Down), [this]() { moveForegroundBy(0, 10); });
+    bindForegroundShortcut(QKeySequence(Qt::Key_Left), [this]() { moveForegroundBy(-10, 0); });
+    bindForegroundShortcut(QKeySequence(Qt::Key_Right), [this]() { moveForegroundBy(10, 0); });
+    bindForegroundShortcut(QKeySequence(Qt::Key_Plus), [this]() { adjustForegroundScale(5); });
+    bindForegroundShortcut(QKeySequence(Qt::Key_Equal), [this]() { adjustForegroundScale(5); });
+    bindForegroundShortcut(QKeySequence(Qt::Key_Minus), [this]() { adjustForegroundScale(-5); });
+    bindForegroundShortcut(QKeySequence(Qt::Key_Space), [this]() { resetForegroundPosition(); });
+
     camGroupLayout->addLayout(chooseLayout);
     camGroupLayout->addLayout(textLayout);
+    camGroupLayout->addLayout(fontLayout);
+    camGroupLayout->addLayout(saveDirLayout);
     camGroupLayout->addLayout(posXLayout);
     camGroupLayout->addLayout(posYLayout);
     camGroupLayout->addLayout(fsLayout);
     camGroupLayout->addWidget(audioRec);
     camGroupLayout->addWidget(colorBtn);
     camGroupLayout->addWidget(recordBtn);
+    camGroupLayout->addWidget(btnCamera);
     camGroupLayout->addStretch(1);
     rightLayout->addWidget(camGroup);
+    rightLayout->addWidget(fgGroup);
     rightLayout->addStretch();
 
     // Main layout assembly
-    mainLayout->addWidget(leftWidget, 2);
+    mainLayout->addWidget(leftWidgetPanel, 2);
     mainLayout->addWidget(camWidget, 6);
-    mainLayout->addWidget(rightWidget, 2);
+    mainLayout->addWidget(rightWidgetPanel, 2);
+}
+
+void BackgroundReplaceWindow::addFgImage()
+{
+    QString fgPath = QFileDialog::getOpenFileName(
+        this,
+        "选择前景图片",
+        QDir::currentPath(),
+        "图片文件 (*.png *.jpg *.jpeg *.bmp)"
+    );
+
+    if (!fgPath.isEmpty()) {
+        std::string pathStr = fgPath.toLocal8Bit().toStdString();
+        fgImage = cv::imread(pathStr, cv::IMREAD_UNCHANGED); // Keep alpha channel if png
+        if (fgImage.empty()) {
+            // try to load with unicode support
+            std::wstring wpath(pathStr.begin(), pathStr.end());
+            FILE* fp = _wfopen(wpath.c_str(), L"rb");
+            if (fp) {
+                fseek(fp, 0, SEEK_END);
+                long size = ftell(fp);
+                fseek(fp, 0, SEEK_SET);
+                std::vector<char> buf(size);
+                fread(buf.data(), 1, size, fp);
+                fclose(fp);
+                fgImage = cv::imdecode(cv::Mat(buf), cv::IMREAD_UNCHANGED);
+            }
+        }
+        if (!fgImage.empty()) {
+            QMessageBox::information(this, "成功", "前景图片加载成功，可用方向键移动，+/-缩放。");
+            fgX = 0;
+            fgY = 0;
+            fgScale = 1.0;
+            fgOpacity = 1.0;
+            btnClearFgImage->setEnabled(true);
+            fgScaleSlider->setValue(100);
+            fgScaleSlider->setEnabled(true);
+            fgOpacitySlider->setValue(100);
+            fgOpacitySlider->setEnabled(true);
+        } else {
+            QMessageBox::critical(this, "错误", "加载前景图片失败！");
+        }
+    }
+}
+
+void BackgroundReplaceWindow::clearFgImage()
+{
+    fgImage.release();
+    fgX = 0;
+    fgY = 0;
+    fgScale = 1.0;
+    fgOpacity = 1.0;
+    btnClearFgImage->setEnabled(false);
+    fgScaleSlider->setValue(100);
+    fgScaleSlider->setEnabled(false);
+    fgOpacitySlider->setValue(100);
+    fgOpacitySlider->setEnabled(false);
+}
+
+void BackgroundReplaceWindow::chooseSaveDirectory()
+{
+    QString startDir = saveDirInput->text().trimmed();
+    if (startDir.isEmpty() || !QDir(startDir).exists()) {
+        startDir = QStandardPaths::writableLocation(QStandardPaths::MoviesLocation);
+    }
+
+    QString dirPath = QFileDialog::getExistingDirectory(
+        this,
+        "选择视频保存目录",
+        startDir,
+        QFileDialog::ShowDirsOnly | QFileDialog::DontResolveSymlinks
+    );
+
+    if (!dirPath.isEmpty()) {
+        saveDirInput->setText(dirPath);
+        saveDirInput->setToolTip(dirPath);
+    }
+}
+
+void BackgroundReplaceWindow::updateFgScale(int value)
+{
+    fgScale = value / 100.0;
+}
+
+void BackgroundReplaceWindow::updateFgOpacity(int value)
+{
+    fgOpacity = value / 100.0;
+}
+
+void BackgroundReplaceWindow::moveForegroundBy(int dx, int dy)
+{
+    if (fgImage.empty()) {
+        return;
+    }
+    fgX += dx;
+    fgY += dy;
+}
+
+void BackgroundReplaceWindow::adjustForegroundScale(int delta)
+{
+    if (fgImage.empty() || !fgScaleSlider->isEnabled()) {
+        return;
+    }
+    fgScaleSlider->setValue(qBound(fgScaleSlider->minimum(),
+                                   fgScaleSlider->value() + delta,
+                                   fgScaleSlider->maximum()));
+}
+
+void BackgroundReplaceWindow::resetForegroundPosition()
+{
+    if (fgImage.empty()) {
+        return;
+    }
+    fgX = 0;
+    fgY = 0;
+}
+
+void BackgroundReplaceWindow::updateRecordingStatusOverlay()
+{
+    if (!recordStatusLabel) {
+        return;
+    }
+
+    if (!isRecording) {
+        recordStatusLabel->clear();
+        recordStatusLabel->hide();
+        return;
+    }
+
+    qint64 elapsedMs = QDateTime::currentMSecsSinceEpoch() - recordStartTime;
+    int seconds = (elapsedMs / 1000) % 60;
+    int minutes = (elapsedMs / (1000 * 60)) % 60;
+    int hours = (elapsedMs / (1000 * 60 * 60));
+
+    QString timeStr = QString("%1:%2:%3")
+        .arg(hours, 2, 10, QChar('0'))
+        .arg(minutes, 2, 10, QChar('0'))
+        .arg(seconds, 2, 10, QChar('0'));
+
+    QString infoStr = QString("REC  %1\nFPS  %2")
+        .arg(timeStr)
+        .arg(currentFPS, 0, 'f', 1);
+    recordStatusLabel->setText(infoStr);
+    recordStatusLabel->show();
+    recordStatusLabel->raise();
+}
+
+void BackgroundReplaceWindow::keyPressEvent(QKeyEvent *event)
+{
+    switch (event->key()) {
+        case Qt::Key_F11:
+            toggleFullScreenPreview();
+            break;
+        case Qt::Key_F12:
+            toggleRecording();
+            break;
+        case Qt::Key_Escape:
+            if (radioImg->isChecked() && imagePaths.size() > 0) {
+                int currentRow = imageListWidget ? imageListWidget->currentRow() : -1;
+                if (currentRow < 0) {
+                    currentRow = imgIndex;
+                }
+
+                if (currentRow > 0) {
+                    imgIndex = currentRow - 1;
+                } else {
+                    imgIndex = imagePaths.size() - 1;
+                }
+                imageListWidget->setCurrentRow(imgIndex);
+                onImageItemClicked(imageListWidget->currentItem());
+            }
+            break;
+    }
+    QMainWindow::keyPressEvent(event);
+}
+
+void BackgroundReplaceWindow::toggleFullScreenPreview()
+{
+    if (!mainLayout || !camWidget || !leftWidgetPanel || !rightWidgetPanel || !cameraGroupBox) {
+        return;
+    }
+
+    if (!isPreviewFullScreen) {
+        leftWidgetPanel->hide();
+        rightWidgetPanel->hide();
+
+        mainLayout->setContentsMargins(0, 0, 0, 0);
+        mainLayout->setSpacing(0);
+        qobject_cast<QVBoxLayout *>(camWidget->layout())->setContentsMargins(0, 0, 0, 0);
+        qobject_cast<QVBoxLayout *>(cameraGroupBox->layout())->setContentsMargins(0, 0, 0, 0);
+
+        cameraGroupBox->setTitle("");
+        cameraGroupBox->setStyleSheet("QGroupBox { border: none; margin-top: 0px; }");
+        cameraLabel->setStyleSheet("");
+        showFullScreen();
+        isPreviewFullScreen = true;
+    } else {
+        showNormal();
+        leftWidgetPanel->show();
+        rightWidgetPanel->show();
+
+        mainLayout->setContentsMargins(10, 10, 10, 10);
+        mainLayout->setSpacing(10);
+        qobject_cast<QVBoxLayout *>(camWidget->layout())->setContentsMargins(5, 5, 5, 5);
+        qobject_cast<QVBoxLayout *>(cameraGroupBox->layout())->setContentsMargins(9, 9, 9, 9);
+
+        cameraGroupBox->setTitle("摄像头预览（背景替换）");
+        cameraGroupBox->setStyleSheet("");
+        cameraLabel->setStyleSheet("min-height: 550px;max-height: 550px;");
+        isPreviewFullScreen = false;
+    }
+}
+
+void BackgroundReplaceWindow::drawForeground(cv::Mat &frame)
+{
+    if (fgImage.empty()) return;
+
+    cv::Mat resizedFg;
+    cv::resize(fgImage, resizedFg, cv::Size(), fgScale, fgScale);
+
+    int startX = fgX;
+    int startY = fgY;
+
+    for (int y = 0; y < resizedFg.rows; ++y) {
+        int frameY = startY + y;
+        if (frameY < 0 || frameY >= frame.rows) continue;
+
+        for (int x = 0; x < resizedFg.cols; ++x) {
+            int frameX = startX + x;
+            if (frameX < 0 || frameX >= frame.cols) continue;
+
+            if (resizedFg.channels() == 4) {
+                cv::Vec4b fgPixel = resizedFg.at<cv::Vec4b>(y, x);
+                double alpha = (fgPixel[3] / 255.0) * fgOpacity;
+                
+                if (alpha > 0) {
+                    cv::Vec3b &bgPixel = frame.at<cv::Vec3b>(frameY, frameX);
+                    for (int c = 0; c < 3; ++c) {
+                        bgPixel[c] = static_cast<uchar>(fgPixel[c] * alpha + bgPixel[c] * (1.0 - alpha));
+                    }
+                }
+            } else {
+                cv::Vec3b fgPixel = resizedFg.at<cv::Vec3b>(y, x);
+                double alpha = fgOpacity;
+                cv::Vec3b &bgPixel = frame.at<cv::Vec3b>(frameY, frameX);
+                for (int c = 0; c < 3; ++c) {
+                    bgPixel[c] = static_cast<uchar>(fgPixel[c] * alpha + bgPixel[c] * (1.0 - alpha));
+                }
+            }
+        }
+    }
 }
 
 void BackgroundReplaceWindow::onTextChanged(const QString &text)
@@ -325,38 +692,40 @@ void BackgroundReplaceWindow::toggleRecording()
     }
 
     if (!isRecording) {
-        // ========== 弹出保存对话框，让用户选择路径和文件名 ==========
-        QString defaultPath = QDir::currentPath() + "/output_video.mp4";
-        QString videoPath = QFileDialog::getSaveFileName(
-            this,  // 父窗口
-            "选择视频保存位置",  // 对话框标题
-            defaultPath,  // 默认路径和文件名
-            "MP4 视频 (*.mp4);;AVI 视频 (*.avi);;所有文件 (*.*)"  // 支持的文件格式
-        );
-        
-        // 处理用户取消选择的情况
-        if (videoPath.isEmpty()) {
-            QMessageBox::information(this, "提示", "已取消录制");
+        QString dirPath = saveDirInput ? saveDirInput->text().trimmed() : QString();
+        if (dirPath.isEmpty()) {
+            QMessageBox::warning(this, "提示", "请先在右侧面板中选择视频保存目录。");
             return;
         }
-        savePath=videoPath;
-        if(videoPath.back()=='4'){
-            videoPath=extractDirPathQt(videoPath)+"tempVideo.mp4";
+        if (!QDir(dirPath).exists()) {
+            QMessageBox::warning(this, "提示", "当前保存目录不存在，请重新选择。");
+            return;
+        }
+
+        QString timestamp = QDateTime::currentDateTime().toString("yyyyMMddhhmmss");
+        QString videoPath = QDir(dirPath).filePath(timestamp + ".mp4");
+
+        savePath = videoPath;
+        if(videoPath.endsWith(".mp4", Qt::CaseInsensitive)){
+            videoPath = extractDirPathQt(videoPath) + "tempVideo.mp4";
         }
         else{
-            videoPath=extractDirPathQt(videoPath)+"tempVideo.avi";
+            videoPath = extractDirPathQt(videoPath) + "tempVideo.avi";
         }
         // ========== 开始录制 ==========
         isRecording = true;
+        recordStartTime = QDateTime::currentMSecsSinceEpoch();
+        writtenFrames = 0;
         audioRec->toggleRecord(extractDirPathQt(videoPath));
         recordBtn->setText("停止录制");
+        updateRecordingStatusOverlay();
 
         // ========== 获取摄像头画面的分辨率（强制为640x480，确保兼容性） ==========
         try {
             // 固定FPS为30.0，分辨率为640x480，确保兼容性
             const int width = camWidth;
             const int height = camHeight;
-            const double fps = currentFPS;
+            const double fps = RECORD_FPS;
             
             // 根据用户选择的文件后缀自动选择编码格式
             QFileInfo fileInfo(videoPath);
@@ -389,6 +758,7 @@ void BackgroundReplaceWindow::toggleRecording()
             QMessageBox::critical(this, "错误", QString("创建录制文件失败：%1").arg(e.what()));
             isRecording = false;
             recordBtn->setText("开始录制");
+            updateRecordingStatusOverlay();
             if (videoWriter) {
                 delete videoWriter;
                 videoWriter = nullptr;
@@ -400,6 +770,7 @@ void BackgroundReplaceWindow::toggleRecording()
         // ========== 停止录制 ==========
         isRecording = false;
         recordBtn->setText("开始录制");
+        updateRecordingStatusOverlay();
         // 释放视频写入器
         if (videoWriter) {
             videoWriter->release();
@@ -408,12 +779,7 @@ void BackgroundReplaceWindow::toggleRecording()
         }
         audioRec->saveAudio();
         startMix(savePath);
-        // 显示录制完成信息
-        QString fullPath = QFileInfo(QString::fromStdString(recordFilename)).absoluteFilePath();
-        QMessageBox::information(this, "成功", 
-                               QString("录制完成！视频已保存至：\n%1").arg(fullPath));
-        
-        qDebug() << "录制已停止，文件保存至：" << fullPath << '\n';
+        qDebug() << "录制已停止，开始混合音视频：" << savePath << '\n';
     }
 }
 
@@ -569,6 +935,7 @@ void BackgroundReplaceWindow::onImageItemClicked(QListWidgetItem *item)
         return;
     }
 
+    imgIndex = imageListWidget->row(item);
     QString filePath = item->data(Qt::UserRole).toString();
     imagePreviewWidget->setImagePath(filePath);
     btnDeleteImage->setEnabled(true);
@@ -627,6 +994,8 @@ void BackgroundReplaceWindow::toggleCamera()
         cameraLabel->clear();
         fpsLabel->setText("FPS: 0.0");
         frameTimes.clear();
+        currentFPS = 0.0f;
+        updateRecordingStatusOverlay();
     } else {
         camera = new cv::VideoCapture(comboBox->currentIndex());
         if (!camera->isOpened()) {
@@ -674,7 +1043,10 @@ void BackgroundReplaceWindow::updateFrame()
         QString selectedPath = imageListWidget->currentItem()->data(Qt::UserRole).toString();
         try {
             if (radioImg->isChecked()) {
-                segmentor->setBackground(selectedPath.toStdString(), "image");
+                if (currentBgPath != selectedPath || segmentor->getBgType() != "image") {
+                    segmentor->setBackground(selectedPath.toStdString(), "image");
+                    currentBgPath = selectedPath;
+                }
                 outputFrame = segmentor->segmentAndReplace(frame);
             } else if (radioVideo->isChecked()) {
                 outputFrame = segmentor->segmentAndReplace(frame);
@@ -693,6 +1065,8 @@ void BackgroundReplaceWindow::updateFrame()
         }
     }
 
+    drawForeground(outputFrame);
+
     if (isRecording && videoWriter) {
         // 检查帧是否有效
         if (!outputFrame.empty() && outputFrame.cols > 0 && outputFrame.rows > 0) {
@@ -703,13 +1077,22 @@ void BackgroundReplaceWindow::updateFrame()
             
             // 确保帧格式正确 (BGR格式)
             if (writeFrame.channels() == 3) {
-                videoWriter->write(writeFrame);
+                // 计算理论上应该写入多少帧 (根据录制时长和设定的FPS)
+                qint64 elapsedMs = QDateTime::currentMSecsSinceEpoch() - recordStartTime;
+                int expectedFrames = static_cast<int>(elapsedMs * RECORD_FPS / 1000.0);
+                
+                // 补齐或跳过帧以保持音画同步
+                while (writtenFrames < expectedFrames) {
+                    videoWriter->write(writeFrame);
+                    writtenFrames++;
+                }
             } else {
                 qDebug() << "警告：帧格式不正确，跳过此帧录制" << '\n';
             }
         } else {
             qDebug() << "警告：输出帧为空，跳过录制" << '\n';
         }
+
     }
 
     cv::Mat rgbFrame;
@@ -745,6 +1128,7 @@ void BackgroundReplaceWindow::updateFrame()
 
     // 更新显示
     fpsLabel->setText(QString("FPS: %1").arg(currentFPS, 0, 'f', 1));
+    updateRecordingStatusOverlay();
 }
 
 void BackgroundReplaceWindow::closeEvent(QCloseEvent *event)
@@ -762,6 +1146,7 @@ void BackgroundReplaceWindow::closeEvent(QCloseEvent *event)
 
     if (isRecording) {
         isRecording = false;
+        updateRecordingStatusOverlay();
         if (videoWriter) {
             videoWriter->release();
             delete videoWriter;
@@ -828,6 +1213,17 @@ void BackgroundReplaceWindow::startMix(QString inputPath)
                     QMessageBox::warning(this, "提示",
                                          "音频文件删除失败：");
                 }
+            }
+
+            QString fullPath = QFileInfo(inputPath).absoluteFilePath();
+            QMessageBox::StandardButton reply = QMessageBox::question(
+                this, "成功", 
+                QString("录制成功！是否现在打开视频所在目录？\n%1").arg(fullPath),
+                QMessageBox::Yes | QMessageBox::No
+            );
+            if (reply == QMessageBox::Yes) {
+                QString dirPath = QFileInfo(fullPath).absolutePath();
+                QDesktopServices::openUrl(QUrl::fromLocalFile(dirPath));
             }
         } else {
             // 输出错误信息

@@ -74,6 +74,9 @@ public:
     void setRgb(std::tuple<int, int, int> rgb){
         this->rgb=rgb;
     }
+    void setFontName(const std::string& font_name){
+        this->font_name=font_name;
+    }
     void setConfThreshold(float threshold){
         this->conf_threshold=threshold;
     }
@@ -114,10 +117,11 @@ private:
     cv::VideoCapture bg_video;
 
     // 基础文字绘制相关（仅ASCII）
-    std::string title = "Oath Slogan"; // 默认ASCII文字
+    std::string title = ""; // 默认ASCII文字
     int titleX = 10;
     int titleY = 10;
     int font_size = 40;
+    std::string font_name = "微软雅黑";
     std::tuple<int, int, int> rgb = {0, 0, 0}; // 默认黑色
 };
 

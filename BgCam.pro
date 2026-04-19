@@ -27,11 +27,9 @@ FORMS += \
     mainwindow.ui
 INCLUDEPATH +=C:\Qt\opencv\forQt/install/include \
      C:\Qt\opencv\forQt/install/include/opencv2 \
-     $${PWD}/onnxruntime-win-x64-gpu-1.23.2/include/ \
      $${PWD}/onnxruntime-win-x64-1.23.2/include/
 
 LIBS += C:\Qt\opencv\forQt/install/x64/mingw/lib/libopencv_*.a \
--L$${PWD}/onnxruntime-win-x64-gpu-1.23.2/lib/ -lonnxruntime -lonnxruntime_providers_shared \
 -L$${PWD}/onnxruntime-win-x64-1.23.2/lib/ -lonnxruntime -lonnxruntime_providers_shared
 
 # Windows平台下链接GDI32库
