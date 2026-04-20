@@ -141,6 +141,7 @@ private:
     QGroupBox *cameraControlGroupBox;
     QGroupBox *textSettingsGroupBox;
     QGroupBox *fgSettingsGroupBox;
+    QGroupBox *creationSettingsGroupBox;
     QStackedLayout *previewStackLayout;
     QLabel *cameraLabel;
     QLabel *recordStatusLabel;
@@ -164,9 +165,10 @@ private:
     QButtonGroup *bgTypeGroup;
     QComboBox *comboBox;
     QPlainTextEdit *titleInputBox;
-    QFontComboBox *fontComboBox;
+    QLineEdit *fontInputBox;
     QLineEdit *saveDirInput;
     QPushButton *btnBrowseSaveDir;
+    QPushButton *btnOpenSaveDir;
     QSpinBox *posXInput;
     QSpinBox *posYInput;
     QSpinBox *fsInput;
