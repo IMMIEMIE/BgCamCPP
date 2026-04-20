@@ -1,5 +1,7 @@
 #include "MainWindow.h"
 #include <QApplication>
+#include <QScreen>
+#include <QGuiApplication>
 #include <QDir>
 #include <QStandardPaths>
 #include <QDateTime>
@@ -7,6 +9,7 @@
 #include <QUrl>
 #include <QMessageBox>
 #include <QProcess>
+#include <QGraphicsDropShadowEffect>
 #include <iostream>
 
 BackgroundReplaceWindow::BackgroundReplaceWindow(QWidget *parent)
@@ -22,15 +25,16 @@ BackgroundReplaceWindow::BackgroundReplaceWindow(QWidget *parent)
     , recordStartTime(0)
     , videoWriter(nullptr)
     , cameraIndex(0)
-    , currentBgPath("")
-    , currentFPS(0.0f)
+    , currentSetupStep(-1)
     , fgX(0)
     , fgY(0)
     , fgScale(1.0)
     , fgOpacity(1.0)
+    , currentBgPath("")
+    , currentFPS(0.0f)
 {
     setWindowTitle("实时背景替换工具");
-    setFixedSize(1800, 800);
+    setFixedSize(1500, 800);
 
     // Connect timer signals
     connect(timer, &QTimer::timeout, this, &BackgroundReplaceWindow::updateFrame);
@@ -68,118 +72,285 @@ BackgroundReplaceWindow::~BackgroundReplaceWindow()
 
 void BackgroundReplaceWindow::initUI()
 {
-    centralWidget = new QWidget();
-    setCentralWidget(centralWidget);
+    rootStackedWidget = new QStackedWidget();
+    setCentralWidget(rootStackedWidget);
 
+    // ==========================================
+    // 1. 创建标题界面 (Title Screen)
+    // ==========================================
+    titleScreenWidget = new QWidget();
+    QVBoxLayout *titleLayout = new QVBoxLayout(titleScreenWidget);
+    titleLayout->setAlignment(Qt::AlignCenter);
+    titleLayout->setSpacing(40);
+
+    // 1.1 添加 Logo 图片
+    QLabel *logoLabel = new QLabel();
+    QPixmap logoPixmap("e:\\Qt-projects\\BgCam\\BgCamCPP\\build\\Desktop_Qt_6_10_1_MinGW_64_bit-Release\\release\\icon.png");
+    if (!logoPixmap.isNull()) {
+        logoLabel->setPixmap(logoPixmap.scaled(200, 200, Qt::KeepAspectRatio, Qt::SmoothTransformation));
+    } else {
+        logoLabel->setText("[Logo Not Found]");
+    }
+    logoLabel->setAlignment(Qt::AlignCenter);
+    titleLayout->addWidget(logoLabel);
+
+    // 1.2 添加学校名称
+    QLabel *schoolLabel = new QLabel("厦门市康乐第二小学");
+    schoolLabel->setAlignment(Qt::AlignCenter);
+    QFont schoolFont("宋体", 24);
+    schoolLabel->setFont(schoolFont);
+    titleLayout->addWidget(schoolLabel);
+
+    // 1.3 添加系统名称
+    QLabel *systemLabel = new QLabel("正义智脑空间站宪法宣誓系统");
+    systemLabel->setAlignment(Qt::AlignCenter);
+    QFont systemFont("宋体", 36, QFont::Bold);
+    systemLabel->setFont(systemFont);
+    titleLayout->addWidget(systemLabel);
+
+    // 1.4 添加“开始使用”按钮
+    QPushButton *btnStart = new QPushButton("开始使用");
+    btnStart->setFixedSize(250, 60);
+    QFont btnFont("微软雅黑", 16);
+    btnStart->setFont(btnFont);
+    btnStart->setStyleSheet("QPushButton {"
+                            "background-color: #E8F0E4;"
+                            "border: 1px solid #333;"
+                            "border-radius: 4px;"
+                            "color: #333;"
+                            "}"
+                            "QPushButton:hover {"
+                            "background-color: #D5E4CF;"
+                            "}");
+    connect(btnStart, &QPushButton::clicked, this, [this]() { rootStackedWidget->setCurrentWidget(bgTypeSelectionWidget); });
+    
+    QHBoxLayout *btnLayout = new QHBoxLayout();
+    btnLayout->addStretch();
+    btnLayout->addWidget(btnStart);
+    btnLayout->addStretch();
+    titleLayout->addLayout(btnLayout);
+
+    rootStackedWidget->addWidget(titleScreenWidget);
+
+    // ==========================================
+    // 2. 背景类型选择界面
+    // ==========================================
+    bgTypeSelectionWidget = new QWidget();
+    QVBoxLayout *typeLayout = new QVBoxLayout(bgTypeSelectionWidget);
+    typeLayout->setContentsMargins(40, 40, 40, 40);
+    typeLayout->addWidget(createWizardHeader());
+    typeLayout->addSpacing(50);
+
+    QVBoxLayout *radioLayout = new QVBoxLayout();
+    radioLayout->setAlignment(Qt::AlignCenter);
+    bgTypeGroup = new QButtonGroup(this);
+    radioImg = new QRadioButton("图片背景");
+    radioVideo = new QRadioButton("视频背景");
+    radioImg->setFont(QFont("微软雅黑", 16));
+    radioVideo->setFont(QFont("微软雅黑", 16));
+    radioImg->setChecked(true);
+    bgTypeGroup->addButton(radioImg, 1);
+    bgTypeGroup->addButton(radioVideo, 2);
+    radioLayout->addWidget(radioImg);
+    radioLayout->addSpacing(20);
+    radioLayout->addWidget(radioVideo);
+    typeLayout->addLayout(radioLayout);
+    typeLayout->addStretch();
+
+    QHBoxLayout *typeBtnLayout = new QHBoxLayout();
+    QPushButton *btnTypePrev = new QPushButton("上一步");
+    QPushButton *btnTypeNext = new QPushButton("下一步");
+    btnTypePrev->setFixedSize(150, 40);
+    btnTypeNext->setFixedSize(150, 40);
+    typeBtnLayout->addStretch();
+    typeBtnLayout->addWidget(btnTypePrev);
+    typeBtnLayout->addSpacing(50);
+    typeBtnLayout->addWidget(btnTypeNext);
+    typeBtnLayout->addStretch();
+    typeLayout->addLayout(typeBtnLayout);
+    rootStackedWidget->addWidget(bgTypeSelectionWidget);
+
+    connect(btnTypePrev, &QPushButton::clicked, this, [this]() {
+        rootStackedWidget->setCurrentWidget(titleScreenWidget);
+    });
+    connect(btnTypeNext, &QPushButton::clicked, this, [this]() {
+        if (radioImg->isChecked()) {
+            rootStackedWidget->setCurrentWidget(bgImageSetupWidget);
+        } else {
+            rootStackedWidget->setCurrentWidget(bgVideoSetupWidget);
+        }
+    });
+
+    // ==========================================
+    // 3-1. 图片背景设置界面
+    // ==========================================
+    bgImageSetupWidget = new QWidget();
+    QVBoxLayout *imgSetupLayout = new QVBoxLayout(bgImageSetupWidget);
+    imgSetupLayout->setContentsMargins(40, 40, 40, 40);
+    imgSetupLayout->addWidget(createWizardHeader());
+    imgSetupLayout->addSpacing(30);
+
+    QHBoxLayout *imgContentLayout = new QHBoxLayout();
+    // Left side: list and preview
+    QVBoxLayout *imgLeftLayout = new QVBoxLayout();
+    
+    QHBoxLayout *listHLayout = new QHBoxLayout();
+    listHLayout->addWidget(new QLabel("图片列表"));
+    imageListWidget = new QListWidget();
+    imageListWidget->setFixedHeight(100);
+    imageListWidget->setSelectionMode(QAbstractItemView::SingleSelection);
+    connect(imageListWidget, &QListWidget::itemClicked, this, &BackgroundReplaceWindow::onImageItemClicked);
+    listHLayout->addWidget(imageListWidget);
+    imgLeftLayout->addLayout(listHLayout);
+
+    QHBoxLayout *previewHLayout = new QHBoxLayout();
+    previewHLayout->addWidget(new QLabel("图片预览"));
+    imagePreviewWidget = new ImagePreviewWidget();
+    imagePreviewWidget->setFixedSize(360, 250);
+    previewHLayout->addWidget(imagePreviewWidget);
+    previewHLayout->addStretch();
+    imgLeftLayout->addLayout(previewHLayout);
+    imgContentLayout->addLayout(imgLeftLayout);
+
+    // Right side: buttons
+    QVBoxLayout *imgRightLayout = new QVBoxLayout();
+    btnAddImages = new QPushButton("选择背景图片");
+    btnDeleteImage = new QPushButton("删除背景图片");
+    btnClearImages = new QPushButton("清空背景图片");
+    btnAddImages->setFixedSize(180, 40);
+    btnDeleteImage->setFixedSize(180, 40);
+    btnClearImages->setFixedSize(180, 40);
+    
+    connect(btnAddImages, &QPushButton::clicked, this, &BackgroundReplaceWindow::addImages);
+    btnDeleteImage->setEnabled(false);
+    connect(btnDeleteImage, &QPushButton::clicked, this, &BackgroundReplaceWindow::deleteSelectedImage);
+    btnClearImages->setEnabled(false);
+    connect(btnClearImages, &QPushButton::clicked, this, &BackgroundReplaceWindow::clearAllImages);
+    
+    imgRightLayout->addWidget(btnAddImages);
+    imgRightLayout->addWidget(btnDeleteImage);
+    imgRightLayout->addWidget(btnClearImages);
+    imgRightLayout->addSpacing(20);
+    
+    QHBoxLayout *carouselLayout = new QHBoxLayout();
+    chkEnableCarousel = new QCheckBox("启用轮播");
+    intervalSpinBox = new QSpinBox();
+    intervalSpinBox->setRange(1, 60);
+    intervalSpinBox->setValue(5);
+    connect(intervalSpinBox, QOverload<int>::of(&QSpinBox::valueChanged), this, &BackgroundReplaceWindow::setCarouselInterval);
+    carouselLayout->addWidget(chkEnableCarousel);
+    carouselLayout->addWidget(intervalSpinBox);
+    carouselLayout->addWidget(new QLabel("秒"));
+    carouselLayout->addStretch();
+    imgRightLayout->addLayout(carouselLayout);
+    imgRightLayout->addStretch();
+
+    imgContentLayout->addLayout(imgRightLayout);
+    imgSetupLayout->addLayout(imgContentLayout);
+    imgSetupLayout->addStretch();
+
+    QHBoxLayout *imgBtnLayout = new QHBoxLayout();
+    QPushButton *btnImgPrev = new QPushButton("上一步");
+    QPushButton *btnImgNext = new QPushButton("下一步");
+    btnImgPrev->setFixedSize(150, 40);
+    btnImgNext->setFixedSize(150, 40);
+    imgBtnLayout->addStretch();
+    imgBtnLayout->addWidget(btnImgPrev);
+    imgBtnLayout->addSpacing(50);
+    imgBtnLayout->addWidget(btnImgNext);
+    imgBtnLayout->addStretch();
+    imgSetupLayout->addLayout(imgBtnLayout);
+
+    rootStackedWidget->addWidget(bgImageSetupWidget);
+
+    connect(btnImgPrev, &QPushButton::clicked, this, [this]() {
+        rootStackedWidget->setCurrentWidget(bgTypeSelectionWidget);
+    });
+    connect(btnImgNext, &QPushButton::clicked, this, [this]() {
+        if (imagePaths.empty()) {
+            QMessageBox::warning(this, "提示", "背景图片不可为空，请至少选择一张图片！");
+            return;
+        }
+        showMainAppFromWizard();
+    });
+
+    // ==========================================
+    // 3-2. 视频背景设置界面
+    // ==========================================
+    bgVideoSetupWidget = new QWidget();
+    QVBoxLayout *vidSetupLayout = new QVBoxLayout(bgVideoSetupWidget);
+    vidSetupLayout->setContentsMargins(40, 40, 40, 40);
+    vidSetupLayout->addWidget(createWizardHeader());
+    vidSetupLayout->addSpacing(30);
+
+    QHBoxLayout *vidContentLayout = new QHBoxLayout();
+    QVBoxLayout *vidLeftLayout = new QVBoxLayout();
+    
+    QHBoxLayout *nameLayout = new QHBoxLayout();
+    nameLayout->addWidget(new QLabel("视频名称"));
+    videoNameLabel = new QLabel();
+    videoNameLabel->setFrameStyle(QFrame::Panel | QFrame::Sunken);
+    videoNameLabel->setFixedHeight(30);
+    nameLayout->addWidget(videoNameLabel);
+    vidLeftLayout->addLayout(nameLayout);
+
+    QHBoxLayout *vidPreviewLayout = new QHBoxLayout();
+    vidPreviewLayout->addWidget(new QLabel("视频预览"));
+    videoPreviewLabel = new QLabel();
+    videoPreviewLabel->setFixedSize(360, 250);
+    videoPreviewLabel->setFrameStyle(QFrame::Panel | QFrame::Sunken);
+    videoPreviewLabel->setAlignment(Qt::AlignCenter);
+    vidPreviewLayout->addWidget(videoPreviewLabel);
+    vidPreviewLayout->addStretch();
+    vidLeftLayout->addLayout(vidPreviewLayout);
+    vidContentLayout->addLayout(vidLeftLayout);
+
+    QVBoxLayout *vidRightLayout = new QVBoxLayout();
+    btnAddVideo = new QPushButton("选择背景视频");
+    btnAddVideo->setFixedSize(180, 40);
+    connect(btnAddVideo, &QPushButton::clicked, this, &BackgroundReplaceWindow::addVideo);
+    vidRightLayout->addWidget(btnAddVideo);
+    vidRightLayout->addStretch();
+
+    vidContentLayout->addLayout(vidRightLayout);
+    vidSetupLayout->addLayout(vidContentLayout);
+    vidSetupLayout->addStretch();
+
+    QHBoxLayout *vidBtnLayout = new QHBoxLayout();
+    QPushButton *btnVidPrev = new QPushButton("上一步");
+    QPushButton *btnVidNext = new QPushButton("下一步");
+    btnVidPrev->setFixedSize(150, 40);
+    btnVidNext->setFixedSize(150, 40);
+    vidBtnLayout->addStretch();
+    vidBtnLayout->addWidget(btnVidPrev);
+    vidBtnLayout->addSpacing(50);
+    vidBtnLayout->addWidget(btnVidNext);
+    vidBtnLayout->addStretch();
+    vidSetupLayout->addLayout(vidBtnLayout);
+
+    rootStackedWidget->addWidget(bgVideoSetupWidget);
+
+    connect(btnVidPrev, &QPushButton::clicked, this, [this]() {
+        rootStackedWidget->setCurrentWidget(bgTypeSelectionWidget);
+    });
+    connect(btnVidNext, &QPushButton::clicked, this, [this]() {
+        if (currentBgPath.isEmpty()) {
+            QMessageBox::warning(this, "提示", "背景视频不可为空，请选择一个视频！");
+            return;
+        }
+        showMainAppFromWizard();
+    });
+
+    // ==========================================
+    // 2. 创建主应用界面 (Main App)
+    // ==========================================
+    centralWidget = new QWidget();
+    
     cameraNumber = detectCamera();
 
     mainLayout = new QHBoxLayout(centralWidget);
     mainLayout->setContentsMargins(10, 10, 10, 10);
     mainLayout->setSpacing(10);
-
-    // Left control panel
-    leftWidgetPanel = new QWidget();
-    QVBoxLayout *leftLayout = new QVBoxLayout(leftWidgetPanel);
-    leftLayout->setContentsMargins(5, 5, 5, 5);
-    leftLayout->setSpacing(8);
-
-    // Control panel group
-    QGroupBox *controlGroup = new QGroupBox("控制面板");
-    QVBoxLayout *controlLayout = new QVBoxLayout(controlGroup);
-
-    // Background type selection
-    QHBoxLayout *bgTypeLayout = new QHBoxLayout();
-    bgTypeGroup = new QButtonGroup();
-    radioImg = new QRadioButton("图片背景");
-    radioVideo = new QRadioButton("视频背景");
-    radioImg->setChecked(true);
-    bgTypeGroup->addButton(radioImg, 1);
-    bgTypeGroup->addButton(radioVideo, 2);
-    bgTypeLayout->addWidget(radioImg);
-    bgTypeLayout->addWidget(radioVideo);
-    controlLayout->addLayout(bgTypeLayout);
-    connect(radioImg, &QRadioButton::clicked, this, &BackgroundReplaceWindow::imgMode);
-    connect(radioVideo, &QRadioButton::clicked, this, &BackgroundReplaceWindow::videoMode);
-
-    // Image management buttons
-    QVBoxLayout *imgManageLayout = new QVBoxLayout();
-
-    btnAddImages = new QPushButton("添加背景图片");
-    btnAddVideo = new QPushButton("添加背景视频");
-    connect(btnAddImages, &QPushButton::clicked, this, &BackgroundReplaceWindow::addImages);
-    connect(btnAddVideo, &QPushButton::clicked, this, &BackgroundReplaceWindow::addVideo);
-    imgManageLayout->addWidget(btnAddImages);
-    imgManageLayout->addWidget(btnAddVideo);
-    btnAddVideo->hide();
-
-    btnDeleteImage = new QPushButton("删除选中项");
-    btnDeleteImage->setEnabled(false);
-    connect(btnDeleteImage, &QPushButton::clicked, this, &BackgroundReplaceWindow::deleteSelectedImage);
-    imgManageLayout->addWidget(btnDeleteImage);
-
-    btnClearImages = new QPushButton("清空所有项");
-    btnClearImages->setEnabled(false);
-    connect(btnClearImages, &QPushButton::clicked, this, &BackgroundReplaceWindow::clearAllImages);
-    imgManageLayout->addWidget(btnClearImages);
-
-    controlLayout->addLayout(imgManageLayout);
-
-    // Time interval spinbox
-    QHBoxLayout *intervalLayout = new QHBoxLayout();
-    intervalLabel = new QLabel("时间间隔（秒）：");
-    intervalLayout->addWidget(intervalLabel);
-    intervalSpinBox = new QSpinBox();
-    intervalSpinBox->setRange(1, 60);
-    intervalSpinBox->setValue(5);
-    connect(intervalSpinBox, QOverload<int>::of(&QSpinBox::valueChanged),
-            this, &BackgroundReplaceWindow::setCarouselInterval);
-    intervalLayout->addWidget(intervalSpinBox);
-    controlLayout->addLayout(intervalLayout);
-
-    btnTimer = new QPushButton("启动轮播");
-    connect(btnTimer, &QPushButton::clicked, this, &BackgroundReplaceWindow::toggleTimerPrint);
-    controlLayout->addWidget(btnTimer);
-
-    // Confidence slider
-    QVBoxLayout *sliderLayout = new QVBoxLayout();
-    sliderLayout->addWidget(new QLabel("分割置信度（越高越严格）"));
-    confSlider = new QSlider(Qt::Horizontal);
-    confSlider->setRange(1, 9);
-    confSlider->setValue(5);
-    connect(confSlider, &QSlider::valueChanged, this, &BackgroundReplaceWindow::updateConf);
-    sliderLayout->addWidget(confSlider);
-    controlLayout->addLayout(sliderLayout);
-
-    // FPS display
-    fpsLabel = new QLabel("FPS: 0.0");
-    fpsLabel->setAlignment(Qt::AlignCenter);
-    fpsLabel->setStyleSheet("font-size: 16px; font-weight: bold; color: #27ae60; padding: 8px; background-color: #d5f4e6; border-radius: 5px; border: 1px solid #27ae60;");
-    controlLayout->addWidget(fpsLabel);
-
-    controlLayout->addStretch();
-    leftLayout->addWidget(controlGroup);
-
-    // Image list
-    listGroup = new QGroupBox("已导入图片列表");
-    QVBoxLayout *listLayout = new QVBoxLayout(listGroup);
-
-    imageListWidget = new QListWidget();
-    imageListWidget->setSelectionMode(QAbstractItemView::SingleSelection);
-    connect(imageListWidget, &QListWidget::itemClicked,
-            this, &BackgroundReplaceWindow::onImageItemClicked);
-    imageListWidget->setFixedHeight(100);
-    listLayout->addWidget(imageListWidget);
-
-    // Image preview
-    QGroupBox *previewGroup = new QGroupBox("图片预览");
-    QVBoxLayout *previewLayout = new QVBoxLayout(previewGroup);
-    previewGroup->setFixedSize(380, 300);
-    imagePreviewWidget = new ImagePreviewWidget();
-    imagePreviewWidget->setFixedSize(360, 250);
-    previewLayout->addWidget(imagePreviewWidget, 0, Qt::AlignCenter);
-    leftLayout->addWidget(previewGroup);
-    leftLayout->addWidget(listGroup);
-    leftLayout->addStretch();
 
     // Middle camera display area
     camWidget = new QWidget();
@@ -188,15 +359,19 @@ void BackgroundReplaceWindow::initUI()
 
     cameraGroupBox = new QGroupBox("摄像头预览（F11全屏/退出全屏）");
     QVBoxLayout *cameraLayout = new QVBoxLayout(cameraGroupBox);
+    cameraLayout->setSizeConstraint(QLayout::SetFixedSize);
+    cameraGroupBox->setSizePolicy(QSizePolicy::Maximum, QSizePolicy::Maximum);
 
     QWidget *previewContainer = new QWidget();
+    previewContainer->setSizePolicy(QSizePolicy::Fixed, QSizePolicy::Fixed);
     previewStackLayout = new QStackedLayout(previewContainer);
     previewStackLayout->setStackingMode(QStackedLayout::StackAll);
     previewStackLayout->setContentsMargins(0, 0, 0, 0);
 
     cameraLabel = new QLabel();
     cameraLabel->setAlignment(Qt::AlignCenter);
-    cameraLabel->setStyleSheet("min-height: 550px;max-height: 550px;");
+    cameraLabel->setMinimumSize(640, 480);
+    cameraLabel->setMaximumSize(960, 540);
     previewStackLayout->addWidget(cameraLabel);
 
     QWidget *overlayLayer = new QWidget();
@@ -224,21 +399,33 @@ void BackgroundReplaceWindow::initUI()
     overlayTopLayout->addWidget(recordStatusLabel, 0, Qt::AlignTop | Qt::AlignRight);
     overlayRootLayout->insertLayout(0, overlayTopLayout);
     previewStackLayout->addWidget(overlayLayer);
+    previewStackLayout->setCurrentWidget(overlayLayer);
 
     cameraLayout->addWidget(previewContainer);
-    camLayout->addWidget(cameraGroupBox);
+    camLayout->addWidget(cameraGroupBox, 0, Qt::AlignCenter);
 
-    // Right camera settings + recording settings
+    // Right control + camera settings + recording settings
     rightWidgetPanel = new QWidget();
     QVBoxLayout *rightLayout = new QVBoxLayout(rightWidgetPanel);
     rightLayout->setContentsMargins(5, 5, 5, 5);
     rightLayout->setSpacing(8);
 
-    QGroupBox *camGroup = new QGroupBox("画面设置");
-    QVBoxLayout *camGroupLayout = new QVBoxLayout(camGroup);
-    camGroupLayout->addLayout(bgTypeLayout);
-    camGroupLayout->addStretch();
-    rightLayout->addWidget(camGroup);
+    setupStepLabel = new QLabel();
+    setupStepLabel->setAlignment(Qt::AlignCenter);
+    setupStepLabel->setStyleSheet("font-size: 28px; font-weight: bold; color: #fff; padding: 6px 0;");
+    {
+        auto *shadow = new QGraphicsDropShadowEffect(setupStepLabel);
+        shadow->setBlurRadius(10);
+        shadow->setOffset(2, 2);
+        shadow->setColor(QColor(0, 0, 0, 220));
+        setupStepLabel->setGraphicsEffect(shadow);
+    }
+    setupStepLabel->setVisible(false);
+    rightLayout->addWidget(setupStepLabel);
+
+    // Control panel group (moved to creation settings)
+    controlGroupBox = new QGroupBox("控制面板");
+    controlGroupBox->setVisible(false); // No longer used as a standalone group in wizard
 
     QHBoxLayout *chooseLayout = new QHBoxLayout();
     QLabel *chooseLabel = new QLabel("选择摄像头：");
@@ -250,6 +437,22 @@ void BackgroundReplaceWindow::initUI()
     }
     chooseLayout->addWidget(comboBox);
     chooseLayout->setStretchFactor(comboBox, 1);
+
+    cameraControlGroupBox = new QGroupBox("摄像头设置");
+    QVBoxLayout *cameraControlLayout = new QVBoxLayout(cameraControlGroupBox);
+
+    btnCamera = new QPushButton("启动摄像头");
+    connect(btnCamera, &QPushButton::clicked, this, &BackgroundReplaceWindow::toggleCamera);
+    QLabel *cameraTipLabel = new QLabel("请先选择并启动摄像头，再进入下一步。");
+    cameraTipLabel->setWordWrap(true);
+    cameraTipLabel->setStyleSheet("color: #666;");
+    cameraControlLayout->addLayout(chooseLayout);
+    cameraControlLayout->addWidget(btnCamera);
+    cameraControlLayout->addWidget(cameraTipLabel);
+    rightLayout->addWidget(cameraControlGroupBox);
+
+    textSettingsGroupBox = new QGroupBox("文字设置");
+    QVBoxLayout *textSettingsLayout = new QVBoxLayout(textSettingsGroupBox);
 
     QHBoxLayout *textLayout = new QHBoxLayout();
     QLabel *inputLabel = new QLabel("宣誓标语：");
@@ -263,27 +466,19 @@ void BackgroundReplaceWindow::initUI()
     textLayout->addWidget(titleInputBox);
 
     QHBoxLayout *fontLayout = new QHBoxLayout();
-    QLabel *fontLabel = new QLabel("字体选择：");
-    fontComboBox = new QFontComboBox();
-    connect(fontComboBox, &QFontComboBox::currentFontChanged,
-            this, [this](const QFont &font) {
-                segmentor->setFontName(font.family().toStdString());
+    QLabel *fontLabel = new QLabel("字体名称：");
+    fontInputBox = new QLineEdit();
+    fontInputBox->setPlaceholderText("请输入字体名称，例如：宋体、黑体");
+    connect(fontInputBox, &QLineEdit::textChanged,
+            this, [this](const QString &fontName) {
+                if (!fontName.trimmed().isEmpty()) {
+                    QByteArray localFontName = fontName.trimmed().toLocal8Bit();
+                    segmentor->setFontName(std::string(localFontName.constData(), localFontName.size()));
+                }
             });
+    fontInputBox->setText("微软雅黑"); // 默认字体，并触发一次同步
     fontLayout->addWidget(fontLabel);
-    fontLayout->addWidget(fontComboBox);
-
-    QHBoxLayout *saveDirLayout = new QHBoxLayout();
-    QLabel *saveDirLabel = new QLabel("保存目录：");
-    saveDirInput = new QLineEdit();
-    saveDirInput->setReadOnly(true);
-    saveDirInput->setPlaceholderText("请选择视频保存目录");
-    saveDirInput->setText(QStandardPaths::writableLocation(QStandardPaths::MoviesLocation));
-    saveDirInput->setToolTip(saveDirInput->text());
-    btnBrowseSaveDir = new QPushButton("选择...");
-    connect(btnBrowseSaveDir, &QPushButton::clicked, this, &BackgroundReplaceWindow::chooseSaveDirectory);
-    saveDirLayout->addWidget(saveDirLabel);
-    saveDirLayout->addWidget(saveDirInput, 1);
-    saveDirLayout->addWidget(btnBrowseSaveDir);
+    fontLayout->addWidget(fontInputBox);
 
     QHBoxLayout *posXLayout = new QHBoxLayout();
     QLabel *posXLabel = new QLabel("左右位置：");
@@ -317,17 +512,17 @@ void BackgroundReplaceWindow::initUI()
 
     QPushButton *colorBtn = new QPushButton("选择文字颜色");
     connect(colorBtn, &QPushButton::clicked, this, &BackgroundReplaceWindow::chooseColor);
-    audioRec =new audioRecorder();
-    recordBtn = new QPushButton("开始录制");
-    connect(recordBtn, &QPushButton::clicked, this, &BackgroundReplaceWindow::toggleRecording);
 
-    // Camera start/stop button
-    btnCamera = new QPushButton("启动摄像头");
-    connect(btnCamera, &QPushButton::clicked, this, &BackgroundReplaceWindow::toggleCamera);
+    textSettingsLayout->addLayout(textLayout);
+    textSettingsLayout->addLayout(fontLayout);
+    textSettingsLayout->addLayout(posXLayout);
+    textSettingsLayout->addLayout(posYLayout);
+    textSettingsLayout->addLayout(fsLayout);
+    textSettingsLayout->addWidget(colorBtn);
+    rightLayout->addWidget(textSettingsGroupBox);
 
-    // Foreground image group
-    QGroupBox *fgGroup = new QGroupBox("前景图片设置");
-    QVBoxLayout *fgLayout = new QVBoxLayout(fgGroup);
+    fgSettingsGroupBox = new QGroupBox("前景图片设置");
+    QVBoxLayout *fgLayout = new QVBoxLayout(fgSettingsGroupBox);
 
     btnAddFgImage = new QPushButton("添加前景图片");
     connect(btnAddFgImage, &QPushButton::clicked, this, &BackgroundReplaceWindow::addFgImage);
@@ -372,27 +567,237 @@ void BackgroundReplaceWindow::initUI()
     bindForegroundShortcut(QKeySequence(Qt::Key_Minus), [this]() { adjustForegroundScale(-5); });
     bindForegroundShortcut(QKeySequence(Qt::Key_Space), [this]() { resetForegroundPosition(); });
 
-    camGroupLayout->addLayout(chooseLayout);
-    camGroupLayout->addLayout(textLayout);
-    camGroupLayout->addLayout(fontLayout);
-    camGroupLayout->addLayout(saveDirLayout);
-    camGroupLayout->addLayout(posXLayout);
-    camGroupLayout->addLayout(posYLayout);
-    camGroupLayout->addLayout(fsLayout);
-    camGroupLayout->addWidget(audioRec);
-    camGroupLayout->addWidget(colorBtn);
-    camGroupLayout->addWidget(recordBtn);
-    camGroupLayout->addWidget(btnCamera);
-    camGroupLayout->addStretch(1);
-    rightLayout->addWidget(camGroup);
-    rightLayout->addWidget(fgGroup);
+    rightLayout->addWidget(fgSettingsGroupBox);
+
+    // Creation settings group (new step)
+    creationSettingsGroupBox = new QGroupBox("创作设置");
+    QVBoxLayout *creationLayout = new QVBoxLayout(creationSettingsGroupBox);
+
+    // Confidence slider
+    QVBoxLayout *confLayout = new QVBoxLayout();
+    confLayout->addWidget(new QLabel("分割置信度（越高越严格）"));
+    confSlider = new QSlider(Qt::Horizontal);
+    confSlider->setRange(1, 9);
+    confSlider->setValue(5);
+    connect(confSlider, &QSlider::valueChanged, this, &BackgroundReplaceWindow::updateConf);
+    confLayout->addWidget(confSlider);
+    creationLayout->addLayout(confLayout);
+
+    // FPS display
+    fpsLabel = new QLabel("FPS: 0.0");
+    fpsLabel->setAlignment(Qt::AlignCenter);
+    fpsLabel->setStyleSheet("font-size: 16px; font-weight: bold; color: #27ae60; padding: 8px; background-color: #d5f4e6; border-radius: 5px; border: 1px solid #27ae60;");
+    creationLayout->addWidget(fpsLabel);
+
+    // Save directory selection
+    QHBoxLayout *saveDirLayout = new QHBoxLayout();
+    QLabel *saveDirLabel = new QLabel("保存目录：");
+    saveDirInput = new QLineEdit();
+    saveDirInput->setReadOnly(true);
+    saveDirInput->setPlaceholderText("请选择视频保存目录");
+    saveDirInput->setText(QStandardPaths::writableLocation(QStandardPaths::MoviesLocation));
+    saveDirInput->setToolTip(saveDirInput->text());
+    btnBrowseSaveDir = new QPushButton("选择...");
+    connect(btnBrowseSaveDir, &QPushButton::clicked, this, &BackgroundReplaceWindow::chooseSaveDirectory);
+    
+    btnOpenSaveDir = new QPushButton("打开该目录");
+    connect(btnOpenSaveDir, &QPushButton::clicked, this, [this]() {
+        QString path = saveDirInput->text();
+        if (!path.isEmpty() && QDir(path).exists()) {
+            QDesktopServices::openUrl(QUrl::fromLocalFile(path));
+        } else {
+            QMessageBox::warning(this, "提示", "目录不存在或未选择。");
+        }
+    });
+
+    saveDirLayout->addWidget(saveDirLabel);
+    saveDirLayout->addWidget(saveDirInput, 1);
+    saveDirLayout->addWidget(btnBrowseSaveDir);
+    saveDirLayout->addWidget(btnOpenSaveDir);
+    creationLayout->addLayout(saveDirLayout);
+
+    audioRec = new audioRecorder();
+    creationLayout->addWidget(audioRec);
+
+    QLabel *hotkeyHintLabel = new QLabel("热键提示：F11 全屏切换，F12 开始/停止录制，ESC 切换上一张背景图");
+    hotkeyHintLabel->setWordWrap(true);
+    hotkeyHintLabel->setStyleSheet("color: #2c3e50; background: #ecf4ff; border: 1px solid #b5d3ff; border-radius: 6px; padding: 8px;");
+    creationLayout->addWidget(hotkeyHintLabel);
+
+    recordBtn = new QPushButton("开始创作");
+    recordBtn->setMinimumHeight(50);
+    recordBtn->setStyleSheet("font-weight: bold; font-size: 18px; background-color: #2ecc71; color: white; border-radius: 8px;");
+    connect(recordBtn, &QPushButton::clicked, this, [this]() {
+        // “开始创作”按钮先执行与 F11 相同的全屏切换，再开始录制。
+        if (currentSetupStep == 3 && !isPreviewFullScreen && !isRecording) {
+            toggleFullScreenPreview();
+            QApplication::processEvents();
+        }
+        toggleRecording();
+    });
+    creationLayout->addWidget(recordBtn);
+
+    rightLayout->addWidget(creationSettingsGroupBox);
+
+    QHBoxLayout *setupNavLayout = new QHBoxLayout();
+    setupPrevBtn = new QPushButton("上一步");
+    setupNextBtn = new QPushButton("下一步");
+    setupPrevBtn->setVisible(false);
+    setupNextBtn->setVisible(false);
+    setupNavLayout->addWidget(setupPrevBtn);
+    setupNavLayout->addWidget(setupNextBtn);
+    rightLayout->addLayout(setupNavLayout);
     rightLayout->addStretch();
 
+    connect(setupPrevBtn, &QPushButton::clicked, this, [this]() {
+        if (currentSetupStep <= 0) {
+            returnToBackgroundSetup();
+            return;
+        }
+        showSetupStep(currentSetupStep - 1);
+    });
+    connect(setupNextBtn, &QPushButton::clicked, this, [this]() {
+        if (currentSetupStep == 0) {
+            if (!camera || !camera->isOpened()) {
+                QMessageBox::warning(this, "提示", "请先选择并启动摄像头，再进入下一步。");
+                return;
+            }
+            showSetupStep(1);
+            return;
+        }
+        if (currentSetupStep == 1) {
+            showSetupStep(2);
+            return;
+        }
+        if (currentSetupStep == 2) {
+            showSetupStep(3);
+            return;
+        }
+        close();
+    });
+
     // Main layout assembly
-    mainLayout->addWidget(leftWidgetPanel, 2);
-    mainLayout->addWidget(camWidget, 6);
+    mainLayout->addWidget(camWidget, 8);
     mainLayout->addWidget(rightWidgetPanel, 2);
+
+    rootStackedWidget->addWidget(centralWidget);
+    rootStackedWidget->setCurrentWidget(titleScreenWidget);
 }
+
+void BackgroundReplaceWindow::showMainApp()
+{
+    rootStackedWidget->setCurrentWidget(centralWidget);
+    finishSetupFlow();
+}
+
+QWidget* BackgroundReplaceWindow::createWizardHeader()
+{
+    QWidget *header = new QWidget();
+    QHBoxLayout *layout = new QHBoxLayout(header);
+    layout->setAlignment(Qt::AlignLeft | Qt::AlignVCenter);
+    
+    QLabel *logoLabel = new QLabel();
+    QPixmap logoPixmap("e:\\Qt-projects\\BgCam\\BgCamCPP\\build\\Desktop_Qt_6_10_1_MinGW_64_bit-Release\\release\\icon.png");
+    if (!logoPixmap.isNull()) {
+        logoLabel->setPixmap(logoPixmap.scaled(80, 80, Qt::KeepAspectRatio, Qt::SmoothTransformation));
+    }
+    
+    QLabel *titleLabel = new QLabel("正义智脑空间站宪法宣誓系统");
+    titleLabel->setFont(QFont("宋体", 28));
+    
+    layout->addWidget(logoLabel);
+    layout->addSpacing(20);
+    layout->addWidget(titleLabel);
+    layout->addStretch();
+    return header;
+}
+
+void BackgroundReplaceWindow::showMainAppFromWizard()
+{
+    rootStackedWidget->setCurrentWidget(centralWidget);
+    applyBackgroundSelection();
+    showSetupStep(0);
+}
+
+void BackgroundReplaceWindow::applyBackgroundSelection()
+{
+    if (radioImg->isChecked()) {
+        if (chkEnableCarousel->isChecked()) {
+            carouselInterval = intervalSpinBox->value();
+            carouselTimer->start(carouselInterval * 1000);
+        } else {
+            carouselTimer->stop();
+        }
+        if (!imagePaths.empty()) {
+            segmentor->setBackground(imagePaths[imgIndex], "image");
+            currentBgPath = QString::fromStdString(imagePaths[imgIndex]);
+        }
+    } else if (radioVideo->isChecked()) {
+        carouselTimer->stop();
+        if (!currentBgPath.isEmpty()) {
+            segmentor->setBackground(currentBgPath.toStdString(), "video");
+        }
+    }
+}
+
+void BackgroundReplaceWindow::showSetupStep(int step)
+{
+    currentSetupStep = step;
+    rootStackedWidget->setCurrentWidget(centralWidget);
+
+    const bool inSetupFlow = step >= 0 && step <= 3;
+    if (!inSetupFlow) {
+        finishSetupFlow();
+        return;
+    }
+
+    cameraControlGroupBox->setVisible(step == 0);
+    textSettingsGroupBox->setVisible(step == 1);
+    fgSettingsGroupBox->setVisible(step == 2);
+    creationSettingsGroupBox->setVisible(step == 3);
+    
+    setupStepLabel->setVisible(true);
+    setupPrevBtn->setVisible(true);
+    setupNextBtn->setVisible(true);
+    setupPrevBtn->setText(step == 0 ? "返回背景设置" : "上一步");
+    setupNextBtn->setText(step == 3 ? "关闭" : "下一步");
+
+    if (step == 0) {
+        setupStepLabel->setText("步骤 1/4：选择并启动摄像头");
+    } else if (step == 1) {
+        setupStepLabel->setText("步骤 2/4：设置宣誓标语");
+    } else if (step == 2) {
+        setupStepLabel->setText("步骤 3/4：设置前景图片");
+    } else {
+        setupStepLabel->setText("步骤 4/4：准备开始创作");
+        recordBtn->setText("开始创作");
+    }
+}
+
+void BackgroundReplaceWindow::finishSetupFlow()
+{
+    currentSetupStep = -1;
+    cameraControlGroupBox->show();
+    textSettingsGroupBox->show();
+    fgSettingsGroupBox->show();
+    creationSettingsGroupBox->show();
+    setupStepLabel->hide();
+    setupPrevBtn->hide();
+    setupNextBtn->hide();
+    recordBtn->setText("开始录制");
+    recordBtn->setStyleSheet(""); // Revert style to default or standard
+}
+
+void BackgroundReplaceWindow::returnToBackgroundSetup()
+{
+    currentSetupStep = -1;
+    if (radioImg->isChecked()) {
+        rootStackedWidget->setCurrentWidget(bgImageSetupWidget);
+    } else {
+        rootStackedWidget->setCurrentWidget(bgVideoSetupWidget);
+    }
+}
+
 
 void BackgroundReplaceWindow::addFgImage()
 {
@@ -543,10 +948,14 @@ void BackgroundReplaceWindow::keyPressEvent(QKeyEvent *event)
 {
     switch (event->key()) {
         case Qt::Key_F11:
-            toggleFullScreenPreview();
+            if (currentSetupStep == 3) {
+                toggleFullScreenPreview();
+            }
             break;
         case Qt::Key_F12:
-            toggleRecording();
+            if (currentSetupStep == 3) {
+                toggleRecording();
+            }
             break;
         case Qt::Key_Escape:
             if (radioImg->isChecked() && imagePaths.size() > 0) {
@@ -570,39 +979,139 @@ void BackgroundReplaceWindow::keyPressEvent(QKeyEvent *event)
 
 void BackgroundReplaceWindow::toggleFullScreenPreview()
 {
-    if (!mainLayout || !camWidget || !leftWidgetPanel || !rightWidgetPanel || !cameraGroupBox) {
+    if (!mainLayout || !camWidget || !rightWidgetPanel || !cameraGroupBox) {
         return;
     }
 
     if (!isPreviewFullScreen) {
-        leftWidgetPanel->hide();
         rightWidgetPanel->hide();
 
         mainLayout->setContentsMargins(0, 0, 0, 0);
         mainLayout->setSpacing(0);
-        qobject_cast<QVBoxLayout *>(camWidget->layout())->setContentsMargins(0, 0, 0, 0);
-        qobject_cast<QVBoxLayout *>(cameraGroupBox->layout())->setContentsMargins(0, 0, 0, 0);
+        auto *camLayout = qobject_cast<QVBoxLayout *>(camWidget->layout());
+        auto *cameraLayout = qobject_cast<QVBoxLayout *>(cameraGroupBox->layout());
+        camLayout->setContentsMargins(0, 0, 0, 0);
+        camLayout->setAlignment(cameraGroupBox, Qt::AlignCenter);
+        cameraLayout->setContentsMargins(0, 0, 0, 0);
+        cameraLayout->setSizeConstraint(QLayout::SetFixedSize);
 
         cameraGroupBox->setTitle("");
         cameraGroupBox->setStyleSheet("QGroupBox { border: none; margin-top: 0px; }");
-        cameraLabel->setStyleSheet("");
+        cameraGroupBox->setSizePolicy(QSizePolicy::Maximum, QSizePolicy::Maximum);
+        if (QWidget *previewContainer = previewStackLayout->parentWidget()) {
+            const QSize screenSize = QGuiApplication::primaryScreen()->availableGeometry().size();
+            const int safeWidth = camWidth > 0 ? camWidth : 640;
+            const int safeHeight = camHeight > 0 ? camHeight : 480;
+            const double aspect = static_cast<double>(safeWidth) / static_cast<double>(safeHeight);
+
+            int targetHeight = screenSize.height();
+            int targetWidth = static_cast<int>(targetHeight * aspect);
+            if (targetWidth > screenSize.width()) {
+                targetWidth = screenSize.width();
+                targetHeight = static_cast<int>(targetWidth / aspect);
+            }
+
+            previewContainer->setSizePolicy(QSizePolicy::Fixed, QSizePolicy::Fixed);
+            previewContainer->setMinimumSize(targetWidth, targetHeight);
+            previewContainer->setMaximumSize(targetWidth, targetHeight);
+            cameraLabel->setMinimumSize(targetWidth, targetHeight);
+            cameraLabel->setMaximumSize(targetWidth, targetHeight);
+        }
         showFullScreen();
         isPreviewFullScreen = true;
     } else {
         showNormal();
-        leftWidgetPanel->show();
         rightWidgetPanel->show();
 
         mainLayout->setContentsMargins(10, 10, 10, 10);
         mainLayout->setSpacing(10);
-        qobject_cast<QVBoxLayout *>(camWidget->layout())->setContentsMargins(5, 5, 5, 5);
-        qobject_cast<QVBoxLayout *>(cameraGroupBox->layout())->setContentsMargins(9, 9, 9, 9);
+        auto *camLayout = qobject_cast<QVBoxLayout *>(camWidget->layout());
+        auto *cameraLayout = qobject_cast<QVBoxLayout *>(cameraGroupBox->layout());
+        camLayout->setContentsMargins(5, 5, 5, 5);
+        camLayout->setAlignment(cameraGroupBox, Qt::AlignCenter);
+        cameraLayout->setContentsMargins(9, 9, 9, 9);
+        cameraLayout->setSizeConstraint(QLayout::SetFixedSize);
 
         cameraGroupBox->setTitle("摄像头预览（背景替换）");
         cameraGroupBox->setStyleSheet("");
-        cameraLabel->setStyleSheet("min-height: 550px;max-height: 550px;");
+        cameraGroupBox->setSizePolicy(QSizePolicy::Maximum, QSizePolicy::Maximum);
+        updateCameraPreviewSize(camWidth, camHeight);
         isPreviewFullScreen = false;
     }
+}
+
+void BackgroundReplaceWindow::updateCameraPreviewSize(int frameWidth, int frameHeight)
+{
+    const int safeWidth = frameWidth > 0 ? frameWidth : 640;
+    const int safeHeight = frameHeight > 0 ? frameHeight : 480;
+    const double aspectRatio = static_cast<double>(safeWidth) / static_cast<double>(safeHeight);
+
+    int targetWidth = safeWidth;
+    int targetHeight = safeHeight;
+
+    const int maxPreviewWidth = 960;
+    const int maxPreviewHeight = 620;
+
+    if (targetWidth > maxPreviewWidth) {
+        targetWidth = maxPreviewWidth;
+        targetHeight = static_cast<int>(targetWidth / aspectRatio);
+    }
+
+    if (targetHeight > maxPreviewHeight) {
+        targetHeight = maxPreviewHeight;
+        targetWidth = static_cast<int>(targetHeight * aspectRatio);
+    }
+
+    targetWidth = std::max(targetWidth, 320);
+    targetHeight = std::max(targetHeight, 240);
+
+    if (QWidget *previewContainer = previewStackLayout->parentWidget()) {
+        previewContainer->setSizePolicy(QSizePolicy::Fixed, QSizePolicy::Fixed);
+        previewContainer->setMinimumSize(targetWidth, targetHeight);
+        previewContainer->setMaximumSize(targetWidth, targetHeight);
+    }
+    cameraLabel->setMinimumSize(targetWidth, targetHeight);
+    cameraLabel->setMaximumSize(targetWidth, targetHeight);
+    cameraGroupBox->adjustSize();
+
+    // 动态调整主窗口大小以适配预览分辨率
+    if (!isPreviewFullScreen) {
+        // 获取右侧面板的建议宽度，设置兜底值
+        int sidebarWidth = rightWidgetPanel ? rightWidgetPanel->sizeHint().width() : 350;
+        if (sidebarWidth < 300) sidebarWidth = 350;
+
+        // 计算水平方向的总边距（包含布局间距）
+        int horizontalMargins = 40; // 基础边距
+        if (mainLayout) {
+            horizontalMargins += mainLayout->contentsMargins().left() + mainLayout->contentsMargins().right() + mainLayout->spacing();
+        }
+        if (camWidget && camWidget->layout()) {
+            horizontalMargins += camWidget->layout()->contentsMargins().left() + camWidget->layout()->contentsMargins().right();
+        }
+
+        // 计算总宽度：预览区宽度 + 右侧面板宽度 + 边距
+        int totalWidth = targetWidth + sidebarWidth + horizontalMargins;
+        
+        // 计算总高度：取预览区高度和右侧面板高度的较大值，并加上垂直边距
+        int sidebarHeight = rightWidgetPanel ? rightWidgetPanel->sizeHint().height() : 600;
+        int verticalMargins = 60; // 基础垂直边距（包含标题栏等）
+        if (mainLayout) {
+            verticalMargins += mainLayout->contentsMargins().top() + mainLayout->contentsMargins().bottom();
+        }
+        int totalHeight = std::max(targetHeight + 80, sidebarHeight) + verticalMargins;
+
+        // 获取屏幕可用尺寸，确保窗口不会超出屏幕
+        QSize availableSize = QGuiApplication::primaryScreen()->availableGeometry().size();
+        totalWidth = std::min(totalWidth, availableSize.width() - 20);
+        totalHeight = std::min(totalHeight, availableSize.height() - 40);
+
+        // 设置窗口为计算出的合适大小
+        this->setFixedSize(totalWidth, totalHeight);
+    }
+
+    cameraLabel->updateGeometry();
+    cameraGroupBox->updateGeometry();
+    camWidget->updateGeometry();
 }
 
 void BackgroundReplaceWindow::drawForeground(cv::Mat &frame)
@@ -757,7 +1266,11 @@ void BackgroundReplaceWindow::toggleRecording()
         } catch (const std::exception &e) {
             QMessageBox::critical(this, "错误", QString("创建录制文件失败：%1").arg(e.what()));
             isRecording = false;
-            recordBtn->setText("开始录制");
+            if (currentSetupStep == 3) {
+                recordBtn->setText("开始创作");
+            } else {
+                recordBtn->setText("开始录制");
+            }
             updateRecordingStatusOverlay();
             if (videoWriter) {
                 delete videoWriter;
@@ -769,7 +1282,11 @@ void BackgroundReplaceWindow::toggleRecording()
     } else {
         // ========== 停止录制 ==========
         isRecording = false;
-        recordBtn->setText("开始录制");
+        if (currentSetupStep == 3) {
+            recordBtn->setText("开始创作");
+        } else {
+            recordBtn->setText("开始录制");
+        }
         updateRecordingStatusOverlay();
         // 释放视频写入器
         if (videoWriter) {
@@ -783,29 +1300,7 @@ void BackgroundReplaceWindow::toggleRecording()
     }
 }
 
-void BackgroundReplaceWindow::imgMode()
-{
-    btnAddImages->show();
-    btnDeleteImage->show();
-    btnClearImages->show();
-    intervalSpinBox->show();
-    btnTimer->show();
-    intervalLabel->show();
-    btnAddVideo->hide();
-}
 
-void BackgroundReplaceWindow::videoMode()
-{
-    btnAddImages->hide();
-    btnDeleteImage->hide();
-    btnClearImages->hide();
-    intervalSpinBox->hide();
-    btnTimer->hide();
-    intervalLabel->hide();
-    btnAddVideo->show();
-    imagePreviewWidget->clear();
-    imagePreviewWidget->setInfoText("当前为视频背景模式");
-}
 
 void BackgroundReplaceWindow::addImages()
 {
@@ -846,24 +1341,26 @@ void BackgroundReplaceWindow::addImages()
 void BackgroundReplaceWindow::addVideo()
 {
     QString videoPath = QFileDialog::getOpenFileName(
-        this,
-        "选择背景视频",
-        QDir::currentPath(),
-        "视频文件 (*.mp4 *.avi *.mov *.wmv)"
-        );
-
-    if (videoPath.isEmpty()) {
-        QMessageBox::warning(this, "提示", "未选择任何视频文件！");
-        return;
-    }
-
-    try {
-        segmentor->setBackground(videoPath.toStdString(), "video");
-        QMessageBox::information(this, "成功",
-                                 QString("已设置视频背景：%1").arg(QFileInfo(videoPath).fileName()));
-    } catch (const std::exception &e) {
-        QMessageBox::critical(this, "错误", QString("视频加载失败：%1").arg(e.what()));
-         qDebug() << "视频背景设置失败：" << e.what() << '\n';
+        this, "选择视频", QDir::currentPath(), "Video Files (*.mp4 *.avi *.mkv *.mov)");
+    if (!videoPath.isEmpty()) {
+        radioVideo->setChecked(true);
+        currentBgPath = videoPath;
+        
+        QFileInfo fi(videoPath);
+        videoNameLabel->setText(fi.fileName());
+        
+        cv::VideoCapture cap(videoPath.toStdString());
+        if (cap.isOpened()) {
+            cv::Mat frame;
+            cap >> frame;
+            if (!frame.empty()) {
+                cv::Mat rgb;
+                cv::cvtColor(frame, rgb, cv::COLOR_BGR2RGB);
+                QImage img(rgb.data, rgb.cols, rgb.rows, rgb.step, QImage::Format_RGB888);
+                videoPreviewLabel->setPixmap(QPixmap::fromImage(img).scaled(videoPreviewLabel->size(), Qt::KeepAspectRatio, Qt::SmoothTransformation));
+            }
+            cap.release();
+        }
     }
 }
 
@@ -962,18 +1459,7 @@ void BackgroundReplaceWindow::printTimeUp()
     onImageItemClicked(imageListWidget->currentItem());
 }
 
-void BackgroundReplaceWindow::toggleTimerPrint()
-{
-    if (carouselTimer->isActive()) {
-        carouselTimer->stop();
-        btnTimer->setText("开始轮播");
-         qDebug() << "定时轮播已停止" << '\n';
-    } else {
-        carouselTimer->start(carouselInterval * 1000);
-        btnTimer->setText("停止轮播");
-         qDebug() << "定时轮播已启动，间隔：" << carouselInterval << "秒" << '\n';
-    }
-}
+
 
 void BackgroundReplaceWindow::updateConf()
 {
@@ -1006,6 +1492,7 @@ void BackgroundReplaceWindow::toggleCamera()
         camHeight = static_cast<int>(camera->get(cv::CAP_PROP_FRAME_HEIGHT));
         camera->set(cv::CAP_PROP_FRAME_WIDTH, camWidth);
         camera->set(cv::CAP_PROP_FRAME_HEIGHT, camHeight);
+        updateCameraPreviewSize(camWidth, camHeight);
         timer->start(22);
         btnCamera->setText("停止摄像头");
         

@@ -19,7 +19,9 @@
 #include <QPlainTextEdit>
 #include <QFontComboBox>
 #include <QLineEdit>
+#include <QCheckBox>
 #include <QStackedLayout>
+#include <QStackedWidget>
 #include <QColorDialog>
 #include <QTimer>
 #include <QDateTime>
@@ -47,7 +49,6 @@ public:
 private slots:
     void updateFrame();
     void printTimeUp();
-    void toggleTimerPrint();
     void updateConf();
     void toggleCamera();
     void toggleRecording();
@@ -58,8 +59,6 @@ private slots:
     void onPosYChanged(int value);
     void onFontSizeChanged(int value);
     void chooseColor();
-    void imgMode();
-    void videoMode();
     void addImages();
     void addVideo();
     void addFgImage();
@@ -75,11 +74,23 @@ protected:
 
 private:
     void initUI();
+    void showMainApp();
+    void showMainAppFromWizard();
+    void applyBackgroundSelection();
+    void showSetupStep(int step);
+    void finishSetupFlow();
+    void returnToBackgroundSetup();
+
+    void updateTextPreview();
+    void updateFgPreview();
+    void onTextAlignChanged(int align);
+    QWidget* createWizardHeader();
     void closeEvent(QCloseEvent *event) override;
     int detectCamera();
     QString extractDirPathQt(const QString& fullPath);
     void drawForeground(cv::Mat &frame);
     void toggleFullScreenPreview();
+    void updateCameraPreviewSize(int frameWidth, int frameHeight);
     void moveForegroundBy(int dx, int dy);
     void adjustForegroundScale(int delta);
     void resetForegroundPosition();
@@ -92,26 +103,60 @@ private:
     QTimer *carouselTimer;
 
     // UI elements
+    QStackedWidget *rootStackedWidget;
+    QWidget *titleScreenWidget;
+    QWidget *bgTypeSelectionWidget;
+    QWidget *bgImageSetupWidget;
+    QWidget *bgVideoSetupWidget;
+
+    QWidget *textSetupWidget;
+    QWidget *fgSetupWidget;
+    
+    QRadioButton *radioNoText;
+    QRadioButton *radioText;
+    QWidget *textConfigPanel;
+    QLabel *textPreviewLabel;
+    QButtonGroup *textAlignGroup;
+    int textAlign; // 0: left, 1: center, 2: right
+    QPushButton *colorBtn;
+
+    QRadioButton *radioNoFg;
+    QRadioButton *radioFg;
+    QWidget *fgConfigPanel;
+    QLabel *fgPreviewLabel;
+    QSpinBox *fgScaleSpinBox;
+    QSpinBox *fgPosXInput;
+    QSpinBox *fgPosYInput;
+    
+    QCheckBox *chkEnableCarousel;
+    QLabel *videoNameLabel;
+    QLabel *videoPreviewLabel;
+
     QWidget *centralWidget;
     QHBoxLayout *mainLayout;
-    QWidget *leftWidgetPanel;
     QWidget *camWidget;
     QWidget *rightWidgetPanel;
     QGroupBox *cameraGroupBox;
+    QGroupBox *controlGroupBox;
+    QGroupBox *cameraControlGroupBox;
+    QGroupBox *textSettingsGroupBox;
+    QGroupBox *fgSettingsGroupBox;
+    QGroupBox *creationSettingsGroupBox;
     QStackedLayout *previewStackLayout;
     QLabel *cameraLabel;
     QLabel *recordStatusLabel;
     QLabel *fpsLabel;
+    QLabel *setupStepLabel;
     QPushButton *btnCamera;
-    QPushButton *btnTimer;
     QPushButton *recordBtn;
+    QPushButton *setupPrevBtn;
+    QPushButton *setupNextBtn;
     QPushButton *btnAddImages;
     QPushButton *btnAddVideo;
     QPushButton *btnDeleteImage;
     QPushButton *btnClearImages;
     QSlider *confSlider;
     QSpinBox *intervalSpinBox;
-    QLabel *intervalLabel;
     QGroupBox *listGroup;
     QListWidget *imageListWidget;
     ImagePreviewWidget *imagePreviewWidget;
@@ -120,9 +165,10 @@ private:
     QButtonGroup *bgTypeGroup;
     QComboBox *comboBox;
     QPlainTextEdit *titleInputBox;
-    QFontComboBox *fontComboBox;
+    QLineEdit *fontInputBox;
     QLineEdit *saveDirInput;
     QPushButton *btnBrowseSaveDir;
+    QPushButton *btnOpenSaveDir;
     QSpinBox *posXInput;
     QSpinBox *posYInput;
     QSpinBox *fsInput;
@@ -154,6 +200,7 @@ private:
     int cameraNumber;
     int camWidth;
     int camHeight;
+    int currentSetupStep;
     QString savePath;
     QString currentBgPath;
 
