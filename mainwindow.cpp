@@ -8,22 +8,23 @@
 #include <QDesktopServices>
 #include <QUrl>
 #include <QMessageBox>
-#include <QProcess>
 #include <QGraphicsDropShadowEffect>
+#include <QPainter>
+#include <QPrintDialog>
+#include <QPrinter>
+#include <QIcon>
 #include <iostream>
 
 BackgroundReplaceWindow::BackgroundReplaceWindow(QWidget *parent)
     : QMainWindow(parent)
     , segmentor(new HumanSeg(0.5))
-    , camera(nullptr)
+    , camera(new FfmpegCamera())
     , timer(new QTimer(this))
     , carouselTimer(new QTimer(this))
     , imgIndex(0)
     , carouselInterval(5)
-    , isRecording(false)
     , isPreviewFullScreen(false)
-    , recordStartTime(0)
-    , videoWriter(nullptr)
+    , isFrameFrozen(false)
     , cameraIndex(0)
     , currentSetupStep(-1)
     , fgX(0)
@@ -33,7 +34,8 @@ BackgroundReplaceWindow::BackgroundReplaceWindow(QWidget *parent)
     , currentBgPath("")
     , currentFPS(0.0f)
 {
-    setWindowTitle("实时背景替换工具");
+    setWindowTitle("AI美学工坊美育创拍系统");
+    setWindowIcon(QIcon(":/icon.png"));
     setFixedSize(1500, 800);
 
     // Connect timer signals
@@ -52,13 +54,8 @@ BackgroundReplaceWindow::~BackgroundReplaceWindow()
     if (carouselTimer->isActive()) {
         carouselTimer->stop();
     }
-    if (isRecording && videoWriter) {
-        videoWriter->release();
-        delete videoWriter;
-        videoWriter = nullptr;
-    }
 
-    if (camera && camera->isOpened()) {
+    if (camera) {
         camera->release();
         delete camera;
         camera = nullptr;
@@ -85,7 +82,7 @@ void BackgroundReplaceWindow::initUI()
 
     // 1.1 添加 Logo 图片
     QLabel *logoLabel = new QLabel();
-    QPixmap logoPixmap("e:\\Qt-projects\\BgCam\\BgCamCPP\\build\\Desktop_Qt_6_10_1_MinGW_64_bit-Release\\release\\icon.png");
+    QPixmap logoPixmap(":/icon.png");
     if (!logoPixmap.isNull()) {
         logoLabel->setPixmap(logoPixmap.scaled(200, 200, Qt::KeepAspectRatio, Qt::SmoothTransformation));
     } else {
@@ -102,7 +99,7 @@ void BackgroundReplaceWindow::initUI()
     titleLayout->addWidget(schoolLabel);
 
     // 1.3 添加系统名称
-    QLabel *systemLabel = new QLabel("正义智脑空间站宪法宣誓系统");
+    QLabel *systemLabel = new QLabel("AI美学工坊美育创拍系统");
     systemLabel->setAlignment(Qt::AlignCenter);
     QFont systemFont("宋体", 36, QFont::Bold);
     systemLabel->setFont(systemFont);
@@ -346,7 +343,7 @@ void BackgroundReplaceWindow::initUI()
     // ==========================================
     centralWidget = new QWidget();
     
-    cameraNumber = detectCamera();
+    detectCameras();
 
     mainLayout = new QHBoxLayout(centralWidget);
     mainLayout->setContentsMargins(10, 10, 10, 10);
@@ -357,7 +354,7 @@ void BackgroundReplaceWindow::initUI()
     QVBoxLayout *camLayout = new QVBoxLayout(camWidget);
     camLayout->setContentsMargins(5, 5, 5, 5);
 
-    cameraGroupBox = new QGroupBox("摄像头预览（F11全屏/退出全屏）");
+    cameraGroupBox = new QGroupBox("摄像头预览（F10 全屏/退出全屏）");
     QVBoxLayout *cameraLayout = new QVBoxLayout(cameraGroupBox);
     cameraLayout->setSizeConstraint(QLayout::SetFixedSize);
     cameraGroupBox->setSizePolicy(QSizePolicy::Maximum, QSizePolicy::Maximum);
@@ -382,10 +379,10 @@ void BackgroundReplaceWindow::initUI()
 
     QHBoxLayout *overlayTopLayout = new QHBoxLayout();
     overlayTopLayout->addStretch();
-    recordStatusLabel = new QLabel();
-    recordStatusLabel->setAlignment(Qt::AlignRight | Qt::AlignVCenter);
-    recordStatusLabel->setVisible(false);
-    recordStatusLabel->setStyleSheet(
+    previewStatusLabel = new QLabel();
+    previewStatusLabel->setAlignment(Qt::AlignRight | Qt::AlignVCenter);
+    previewStatusLabel->setVisible(false);
+    previewStatusLabel->setStyleSheet(
         "QLabel {"
         "color: white;"
         "background-color: rgba(18, 18, 18, 180);"
@@ -396,7 +393,7 @@ void BackgroundReplaceWindow::initUI()
         "font-weight: 600;"
         "}"
     );
-    overlayTopLayout->addWidget(recordStatusLabel, 0, Qt::AlignTop | Qt::AlignRight);
+    overlayTopLayout->addWidget(previewStatusLabel, 0, Qt::AlignTop | Qt::AlignRight);
     overlayRootLayout->insertLayout(0, overlayTopLayout);
     previewStackLayout->addWidget(overlayLayer);
     previewStackLayout->setCurrentWidget(overlayLayer);
@@ -432,21 +429,43 @@ void BackgroundReplaceWindow::initUI()
     chooseLayout->addWidget(chooseLabel);
 
     comboBox = new QComboBox();
-    for (int i = 0; i < cameraNumber; ++i) {
-        comboBox->addItem("相机" + QString::number(i + 1));
+    for (const QString &deviceName : cameraDeviceNames) {
+        comboBox->addItem(deviceName);
     }
     chooseLayout->addWidget(comboBox);
     chooseLayout->setStretchFactor(comboBox, 1);
+
+    QHBoxLayout *resolutionLayout = new QHBoxLayout();
+    QLabel *resolutionLabel = new QLabel("分辨率：");
+    resolutionLayout->addWidget(resolutionLabel);
+
+    resolutionCombo = new QComboBox();
+    struct ResolutionPreset { const char *label; int w; int h; };
+    const ResolutionPreset presets[] = {
+        {"3.7MP 16:9 (2560x1440)", 2560, 1440},
+        {"2.1MP 16:9 (1920x1080)", 1920, 1080},
+        {"0.9MP 16:9 (1280x720)",  1280,  720},
+        {"0.2MP 16:9 (640x360)",    640,  360},
+        {"1.2MP 4:3 (1280x960)",   1280,  960},
+        {"0.3MP 4:3 (640x480)",     640,  480},
+    };
+    for (const auto &p : presets) {
+        resolutionCombo->addItem(QString::fromUtf8(p.label), QSize(p.w, p.h));
+    }
+    resolutionCombo->setCurrentIndex(2); // 默认 1280x720
+    resolutionLayout->addWidget(resolutionCombo);
+    resolutionLayout->setStretchFactor(resolutionCombo, 1);
 
     cameraControlGroupBox = new QGroupBox("摄像头设置");
     QVBoxLayout *cameraControlLayout = new QVBoxLayout(cameraControlGroupBox);
 
     btnCamera = new QPushButton("启动摄像头");
     connect(btnCamera, &QPushButton::clicked, this, &BackgroundReplaceWindow::toggleCamera);
-    QLabel *cameraTipLabel = new QLabel("请先选择并启动摄像头，再进入下一步。");
+    QLabel *cameraTipLabel = new QLabel("请先选择并启动摄像头，再进入下一步。\n注意：部分分辨率受摄像头硬件限制，可能会回退到默认值。");
     cameraTipLabel->setWordWrap(true);
     cameraTipLabel->setStyleSheet("color: #666;");
     cameraControlLayout->addLayout(chooseLayout);
+    cameraControlLayout->addLayout(resolutionLayout);
     cameraControlLayout->addWidget(btnCamera);
     cameraControlLayout->addWidget(cameraTipLabel);
     rightLayout->addWidget(cameraControlGroupBox);
@@ -455,7 +474,7 @@ void BackgroundReplaceWindow::initUI()
     QVBoxLayout *textSettingsLayout = new QVBoxLayout(textSettingsGroupBox);
 
     QHBoxLayout *textLayout = new QHBoxLayout();
-    QLabel *inputLabel = new QLabel("宣誓标语：");
+    QLabel *inputLabel = new QLabel("文本：");
     titleInputBox = new QPlainTextEdit();
     titleInputBox->setMaximumHeight(80);
     connect(titleInputBox, &QPlainTextEdit::textChanged,
@@ -590,12 +609,14 @@ void BackgroundReplaceWindow::initUI()
     creationLayout->addWidget(fpsLabel);
 
     // Save directory selection
-    QHBoxLayout *saveDirLayout = new QHBoxLayout();
+    QVBoxLayout *saveDirLayout = new QVBoxLayout();
+    QHBoxLayout *saveDirInputRow = new QHBoxLayout();
+    QHBoxLayout *saveDirButtonRow = new QHBoxLayout();
     QLabel *saveDirLabel = new QLabel("保存目录：");
     saveDirInput = new QLineEdit();
     saveDirInput->setReadOnly(true);
-    saveDirInput->setPlaceholderText("请选择视频保存目录");
-    saveDirInput->setText(QStandardPaths::writableLocation(QStandardPaths::MoviesLocation));
+    saveDirInput->setPlaceholderText("请选择截图保存目录");
+    saveDirInput->setText(QStandardPaths::writableLocation(QStandardPaths::PicturesLocation));
     saveDirInput->setToolTip(saveDirInput->text());
     btnBrowseSaveDir = new QPushButton("选择...");
     connect(btnBrowseSaveDir, &QPushButton::clicked, this, &BackgroundReplaceWindow::chooseSaveDirectory);
@@ -610,32 +631,31 @@ void BackgroundReplaceWindow::initUI()
         }
     });
 
-    saveDirLayout->addWidget(saveDirLabel);
-    saveDirLayout->addWidget(saveDirInput, 1);
-    saveDirLayout->addWidget(btnBrowseSaveDir);
-    saveDirLayout->addWidget(btnOpenSaveDir);
+    saveDirInputRow->addWidget(saveDirLabel);
+    saveDirInputRow->addWidget(saveDirInput, 1);
+    saveDirButtonRow->addStretch();
+    saveDirButtonRow->addWidget(btnBrowseSaveDir);
+    saveDirButtonRow->addWidget(btnOpenSaveDir);
+    saveDirLayout->addLayout(saveDirInputRow);
+    saveDirLayout->addLayout(saveDirButtonRow);
     creationLayout->addLayout(saveDirLayout);
 
-    audioRec = new audioRecorder();
-    creationLayout->addWidget(audioRec);
-
-    QLabel *hotkeyHintLabel = new QLabel("热键提示：F11 全屏切换，F12 开始/停止录制，ESC 切换上一张背景图");
+    QLabel *hotkeyHintLabel = new QLabel("热键提示：F10 全屏切换，F12 冻结并截图/恢复，F11 打印冻结图片，ESC 切换上一张背景图");
     hotkeyHintLabel->setWordWrap(true);
     hotkeyHintLabel->setStyleSheet("color: #2c3e50; background: #ecf4ff; border: 1px solid #b5d3ff; border-radius: 6px; padding: 8px;");
     creationLayout->addWidget(hotkeyHintLabel);
 
-    recordBtn = new QPushButton("开始创作");
-    recordBtn->setMinimumHeight(50);
-    recordBtn->setStyleSheet("font-weight: bold; font-size: 18px; background-color: #2ecc71; color: white; border-radius: 8px;");
-    connect(recordBtn, &QPushButton::clicked, this, [this]() {
-        // “开始创作”按钮先执行与 F11 相同的全屏切换，再开始录制。
-        if (currentSetupStep == 3 && !isPreviewFullScreen && !isRecording) {
+    freezeBtn = new QPushButton("冻结并截图");
+    freezeBtn->setMinimumHeight(50);
+    freezeBtn->setStyleSheet("font-weight: bold; font-size: 18px; background-color: #2ecc71; color: white; border-radius: 8px;");
+    connect(freezeBtn, &QPushButton::clicked, this, [this]() {
+        if (currentSetupStep == 3 && !isPreviewFullScreen && !isFrameFrozen) {
             toggleFullScreenPreview();
             QApplication::processEvents();
         }
-        toggleRecording();
+        toggleFreezeFrame();
     });
-    creationLayout->addWidget(recordBtn);
+    creationLayout->addWidget(freezeBtn);
 
     rightLayout->addWidget(creationSettingsGroupBox);
 
@@ -697,12 +717,12 @@ QWidget* BackgroundReplaceWindow::createWizardHeader()
     layout->setAlignment(Qt::AlignLeft | Qt::AlignVCenter);
     
     QLabel *logoLabel = new QLabel();
-    QPixmap logoPixmap("e:\\Qt-projects\\BgCam\\BgCamCPP\\build\\Desktop_Qt_6_10_1_MinGW_64_bit-Release\\release\\icon.png");
+    QPixmap logoPixmap(":/icon.png");
     if (!logoPixmap.isNull()) {
         logoLabel->setPixmap(logoPixmap.scaled(80, 80, Qt::KeepAspectRatio, Qt::SmoothTransformation));
     }
     
-    QLabel *titleLabel = new QLabel("正义智脑空间站宪法宣誓系统");
+    QLabel *titleLabel = new QLabel("AI美学工坊美育创拍系统");
     titleLabel->setFont(QFont("宋体", 28));
     
     layout->addWidget(logoLabel);
@@ -765,12 +785,12 @@ void BackgroundReplaceWindow::showSetupStep(int step)
     if (step == 0) {
         setupStepLabel->setText("步骤 1/4：选择并启动摄像头");
     } else if (step == 1) {
-        setupStepLabel->setText("步骤 2/4：设置宣誓标语");
+        setupStepLabel->setText("步骤 2/4：设置画面文本");
     } else if (step == 2) {
         setupStepLabel->setText("步骤 3/4：设置前景图片");
     } else {
-        setupStepLabel->setText("步骤 4/4：准备开始创作");
-        recordBtn->setText("开始创作");
+        setupStepLabel->setText("步骤 4/4：准备截图");
+        freezeBtn->setText(isFrameFrozen ? "恢复实时画面" : "冻结并截图");
     }
 }
 
@@ -784,8 +804,7 @@ void BackgroundReplaceWindow::finishSetupFlow()
     setupStepLabel->hide();
     setupPrevBtn->hide();
     setupNextBtn->hide();
-    recordBtn->setText("开始录制");
-    recordBtn->setStyleSheet(""); // Revert style to default or standard
+    freezeBtn->setText(isFrameFrozen ? "恢复实时画面" : "冻结并截图");
 }
 
 void BackgroundReplaceWindow::returnToBackgroundSetup()
@@ -831,6 +850,10 @@ void BackgroundReplaceWindow::addFgImage()
             fgY = 0;
             fgScale = 1.0;
             fgOpacity = 1.0;
+            fgResizedCache.release();
+            fgAlphaCache.release();
+            fgInvAlphaCache.release();
+            fgCacheDirty = true;
             btnClearFgImage->setEnabled(true);
             fgScaleSlider->setValue(100);
             fgScaleSlider->setEnabled(true);
@@ -845,6 +868,10 @@ void BackgroundReplaceWindow::addFgImage()
 void BackgroundReplaceWindow::clearFgImage()
 {
     fgImage.release();
+    fgResizedCache.release();
+    fgAlphaCache.release();
+    fgInvAlphaCache.release();
+    fgCacheDirty = true;
     fgX = 0;
     fgY = 0;
     fgScale = 1.0;
@@ -860,12 +887,12 @@ void BackgroundReplaceWindow::chooseSaveDirectory()
 {
     QString startDir = saveDirInput->text().trimmed();
     if (startDir.isEmpty() || !QDir(startDir).exists()) {
-        startDir = QStandardPaths::writableLocation(QStandardPaths::MoviesLocation);
+        startDir = QStandardPaths::writableLocation(QStandardPaths::PicturesLocation);
     }
 
     QString dirPath = QFileDialog::getExistingDirectory(
         this,
-        "选择视频保存目录",
+        "选择截图保存目录",
         startDir,
         QFileDialog::ShowDirsOnly | QFileDialog::DontResolveSymlinks
     );
@@ -914,47 +941,45 @@ void BackgroundReplaceWindow::resetForegroundPosition()
     fgY = 0;
 }
 
-void BackgroundReplaceWindow::updateRecordingStatusOverlay()
+void BackgroundReplaceWindow::updatePreviewStatusOverlay()
 {
-    if (!recordStatusLabel) {
+    if (!previewStatusLabel) {
         return;
     }
 
-    if (!isRecording) {
-        recordStatusLabel->clear();
-        recordStatusLabel->hide();
+    if (isFrameFrozen) {
+        QString infoStr = "画面已冻结";
+        if (!frozenImagePath.isEmpty()) {
+            infoStr += "\nF11 打印  F12 恢复";
+        } else {
+            infoStr += "\n截图保存失败，F12 恢复";
+        }
+        previewStatusLabel->setText(infoStr);
+        previewStatusLabel->show();
+        previewStatusLabel->raise();
         return;
     }
 
-    qint64 elapsedMs = QDateTime::currentMSecsSinceEpoch() - recordStartTime;
-    int seconds = (elapsedMs / 1000) % 60;
-    int minutes = (elapsedMs / (1000 * 60)) % 60;
-    int hours = (elapsedMs / (1000 * 60 * 60));
-
-    QString timeStr = QString("%1:%2:%3")
-        .arg(hours, 2, 10, QChar('0'))
-        .arg(minutes, 2, 10, QChar('0'))
-        .arg(seconds, 2, 10, QChar('0'));
-
-    QString infoStr = QString("REC  %1\nFPS  %2")
-        .arg(timeStr)
-        .arg(currentFPS, 0, 'f', 1);
-    recordStatusLabel->setText(infoStr);
-    recordStatusLabel->show();
-    recordStatusLabel->raise();
+    previewStatusLabel->clear();
+    previewStatusLabel->hide();
 }
 
 void BackgroundReplaceWindow::keyPressEvent(QKeyEvent *event)
 {
     switch (event->key()) {
-        case Qt::Key_F11:
+        case Qt::Key_F10:
             if (currentSetupStep == 3) {
                 toggleFullScreenPreview();
             }
             break;
+        case Qt::Key_F11:
+            if (currentSetupStep == 3) {
+                printFrozenFrame();
+            }
+            break;
         case Qt::Key_F12:
             if (currentSetupStep == 3) {
-                toggleRecording();
+                toggleFreezeFrame();
             }
             break;
         case Qt::Key_Escape:
@@ -975,6 +1000,97 @@ void BackgroundReplaceWindow::keyPressEvent(QKeyEvent *event)
             break;
     }
     QMainWindow::keyPressEvent(event);
+}
+
+void BackgroundReplaceWindow::toggleFreezeFrame()
+{
+    if (!camera || !camera->isOpened()) {
+        QMessageBox::warning(this, "提示", "请先启动摄像头。");
+        return;
+    }
+
+    if (isFrameFrozen) {
+        isFrameFrozen = false;
+        frozenFrameImage = QImage();
+        frozenImagePath.clear();
+        freezeBtn->setText("冻结并截图");
+        updatePreviewStatusOverlay();
+        return;
+    }
+
+    if (latestOutputFrame.empty()) {
+        QMessageBox::warning(this, "提示", "当前还没有可用画面，请稍后再试。");
+        return;
+    }
+
+    QImage qtImage(latestOutputFrame.data,
+                   latestOutputFrame.cols,
+                   latestOutputFrame.rows,
+                   static_cast<int>(latestOutputFrame.step),
+                   QImage::Format_BGR888);
+    frozenFrameImage = qtImage.copy();
+    if (frozenFrameImage.isNull()) {
+        QMessageBox::warning(this, "提示", "冻结画面失败，请重试。");
+        return;
+    }
+
+    QString snapshotDir = saveDirInput ? saveDirInput->text().trimmed() : QString();
+    if (snapshotDir.isEmpty() || !QDir(snapshotDir).exists()) {
+        snapshotDir = QStandardPaths::writableLocation(QStandardPaths::PicturesLocation);
+    }
+    if (snapshotDir.isEmpty() || !QDir(snapshotDir).exists()) {
+        snapshotDir = QDir::currentPath();
+    }
+
+    const QString fileName = QString("snapshot_%1.png")
+                                 .arg(QDateTime::currentDateTime().toString("yyyyMMdd_hhmmss"));
+    const QString snapshotPath = QDir(snapshotDir).filePath(fileName);
+    if (frozenFrameImage.save(snapshotPath, "PNG")) {
+        frozenImagePath = snapshotPath;
+    } else {
+        frozenImagePath.clear();
+    }
+
+    cameraLabel->setPixmap(QPixmap::fromImage(frozenFrameImage).scaled(
+        cameraLabel->size(),
+        Qt::KeepAspectRatio,
+        Qt::SmoothTransformation
+    ));
+    isFrameFrozen = true;
+    freezeBtn->setText("恢复实时画面");
+    updatePreviewStatusOverlay();
+}
+
+void BackgroundReplaceWindow::printFrozenFrame()
+{
+    if (!isFrameFrozen || frozenFrameImage.isNull()) {
+        return;
+    }
+
+    QPrinter printer(QPrinter::HighResolution);
+    printer.setPageOrientation(QPageLayout::Portrait);
+
+    QPrintDialog dialog(&printer, this);
+    if (dialog.exec() != QDialog::Accepted) {
+        return;
+    }
+
+    QPainter painter(&printer);
+    if (!painter.isActive()) {
+        QMessageBox::warning(this, "提示", "打印启动失败。");
+        return;
+    }
+
+    const QRectF pageRect = printer.pageRect(QPrinter::DevicePixel);
+    QImage scaledImage = frozenFrameImage.scaled(
+        pageRect.size().toSize(),
+        Qt::KeepAspectRatio,
+        Qt::SmoothTransformation
+    );
+    const QPoint topLeft(static_cast<int>((pageRect.width() - scaledImage.width()) / 2.0),
+                         static_cast<int>((pageRect.height() - scaledImage.height()) / 2.0));
+    painter.drawImage(topLeft, scaledImage);
+    painter.end();
 }
 
 void BackgroundReplaceWindow::toggleFullScreenPreview()
@@ -1118,39 +1234,61 @@ void BackgroundReplaceWindow::drawForeground(cv::Mat &frame)
 {
     if (fgImage.empty()) return;
 
-    cv::Mat resizedFg;
-    cv::resize(fgImage, resizedFg, cv::Size(), fgScale, fgScale);
+    // 仅当源图/缩放/透明度变化时才重建缓存，正常播放时几乎零开销。
+    const bool needRebuild = fgCacheDirty
+        || fgResizedCache.empty()
+        || std::abs(fgCachedScale - fgScale) > 1e-6
+        || std::abs(fgCachedOpacity - fgOpacity) > 1e-6;
 
-    int startX = fgX;
-    int startY = fgY;
+    if (needRebuild) {
+        cv::Mat resized;
+        cv::resize(fgImage, resized, cv::Size(), fgScale, fgScale, cv::INTER_LINEAR);
 
-    for (int y = 0; y < resizedFg.rows; ++y) {
-        int frameY = startY + y;
-        if (frameY < 0 || frameY >= frame.rows) continue;
+        if (resized.channels() == 4) {
+            std::vector<cv::Mat> chs;
+            cv::split(resized, chs);
+            cv::Mat alpha8u = chs[3];
+            cv::merge(std::vector<cv::Mat>{chs[0], chs[1], chs[2]}, fgResizedCache);
 
-        for (int x = 0; x < resizedFg.cols; ++x) {
-            int frameX = startX + x;
-            if (frameX < 0 || frameX >= frame.cols) continue;
-
-            if (resizedFg.channels() == 4) {
-                cv::Vec4b fgPixel = resizedFg.at<cv::Vec4b>(y, x);
-                double alpha = (fgPixel[3] / 255.0) * fgOpacity;
-                
-                if (alpha > 0) {
-                    cv::Vec3b &bgPixel = frame.at<cv::Vec3b>(frameY, frameX);
-                    for (int c = 0; c < 3; ++c) {
-                        bgPixel[c] = static_cast<uchar>(fgPixel[c] * alpha + bgPixel[c] * (1.0 - alpha));
-                    }
-                }
-            } else {
-                cv::Vec3b fgPixel = resizedFg.at<cv::Vec3b>(y, x);
-                double alpha = fgOpacity;
-                cv::Vec3b &bgPixel = frame.at<cv::Vec3b>(frameY, frameX);
-                for (int c = 0; c < 3; ++c) {
-                    bgPixel[c] = static_cast<uchar>(fgPixel[c] * alpha + bgPixel[c] * (1.0 - alpha));
-                }
-            }
+            cv::Mat alphaF;
+            alpha8u.convertTo(alphaF, CV_32F, fgOpacity / 255.0);
+            cv::merge(std::vector<cv::Mat>{alphaF, alphaF, alphaF}, fgAlphaCache);
+            fgInvAlphaCache = cv::Scalar::all(1.0) - fgAlphaCache;
+        } else {
+            fgResizedCache = resized;
+            fgAlphaCache.release();
+            fgInvAlphaCache.release();
         }
+
+        fgCachedScale = fgScale;
+        fgCachedOpacity = fgOpacity;
+        fgCacheDirty = false;
+    }
+
+    // 只对前景与画面相交的 ROI 区域做混合，画面外的像素直接跳过。
+    const cv::Rect frameRect(0, 0, frame.cols, frame.rows);
+    const cv::Rect fgRect(fgX, fgY, fgResizedCache.cols, fgResizedCache.rows);
+    const cv::Rect roi = frameRect & fgRect;
+    if (roi.width <= 0 || roi.height <= 0) return;
+
+    const cv::Rect fgRoi(roi.x - fgX, roi.y - fgY, roi.width, roi.height);
+    cv::Mat fgPart = fgResizedCache(fgRoi);
+    cv::Mat framePart = frame(roi);
+
+    if (!fgAlphaCache.empty()) {
+        // 带 alpha 通道：out = fg * alpha + bg * (1 - alpha)
+        // 改用 OpenCV 矢量化运算（SIMD），代替原先的逐像素 at<> 循环。
+        cv::Mat alphaPart = fgAlphaCache(fgRoi);
+        cv::Mat invAlphaPart = fgInvAlphaCache(fgRoi);
+
+        cv::Mat fgF, frameF;
+        fgPart.convertTo(fgF, CV_32FC3);
+        framePart.convertTo(frameF, CV_32FC3);
+        cv::Mat blended = fgF.mul(alphaPart) + frameF.mul(invAlphaPart);
+        blended.convertTo(framePart, CV_8UC3);
+    } else {
+        // 无 alpha 通道：整体透明度做线性混合，addWeighted 一步到位。
+        cv::addWeighted(fgPart, fgOpacity, framePart, 1.0 - fgOpacity, 0.0, framePart);
     }
 }
 
@@ -1191,116 +1329,6 @@ void BackgroundReplaceWindow::chooseColor()
         segmentor->setRgb(rgb);
     }
 }
-
-void BackgroundReplaceWindow::toggleRecording()
-{
-    // ========== 检查摄像头是否已启动 ==========
-    if (!camera || !camera->isOpened()) {
-        QMessageBox::warning(this, "警告", "请先启动摄像头再录制！");
-        return;
-    }
-
-    if (!isRecording) {
-        QString dirPath = saveDirInput ? saveDirInput->text().trimmed() : QString();
-        if (dirPath.isEmpty()) {
-            QMessageBox::warning(this, "提示", "请先在右侧面板中选择视频保存目录。");
-            return;
-        }
-        if (!QDir(dirPath).exists()) {
-            QMessageBox::warning(this, "提示", "当前保存目录不存在，请重新选择。");
-            return;
-        }
-
-        QString timestamp = QDateTime::currentDateTime().toString("yyyyMMddhhmmss");
-        QString videoPath = QDir(dirPath).filePath(timestamp + ".mp4");
-
-        savePath = videoPath;
-        if(videoPath.endsWith(".mp4", Qt::CaseInsensitive)){
-            videoPath = extractDirPathQt(videoPath) + "tempVideo.mp4";
-        }
-        else{
-            videoPath = extractDirPathQt(videoPath) + "tempVideo.avi";
-        }
-        // ========== 开始录制 ==========
-        isRecording = true;
-        recordStartTime = QDateTime::currentMSecsSinceEpoch();
-        writtenFrames = 0;
-        audioRec->toggleRecord(extractDirPathQt(videoPath));
-        recordBtn->setText("停止录制");
-        updateRecordingStatusOverlay();
-
-        // ========== 获取摄像头画面的分辨率（强制为640x480，确保兼容性） ==========
-        try {
-            // 固定FPS为30.0，分辨率为640x480，确保兼容性
-            const int width = camWidth;
-            const int height = camHeight;
-            const double fps = RECORD_FPS;
-            
-            // 根据用户选择的文件后缀自动选择编码格式
-            QFileInfo fileInfo(videoPath);
-            QString extension = fileInfo.suffix().toLower();
-            
-            int fourcc;
-            if (extension == "avi") {
-                fourcc = cv::VideoWriter::fourcc('X', 'V', 'I', 'D');  // AVI编码
-            } else {
-                fourcc = cv::VideoWriter::fourcc('m', 'p', '4', 'v');  // 默认MP4编码
-            }
-
-            // ========== 创建VideoWriter ==========
-            videoWriter = new cv::VideoWriter(
-                videoPath.toStdString(),
-                fourcc,
-                fps,
-                cv::Size(width, height)
-            );
-            
-            if (!videoWriter->isOpened()) {
-                throw std::runtime_error("视频写入器创建失败，请检查路径权限或编码格式");
-            }
-            
-            recordFilename = videoPath.toStdString();
-            qDebug() << "开始录制：" << videoPath << '\n';
-            qDebug() << "FPS：" << fps << "，分辨率：" << width << "x" << height << '\n';
-            
-        } catch (const std::exception &e) {
-            QMessageBox::critical(this, "错误", QString("创建录制文件失败：%1").arg(e.what()));
-            isRecording = false;
-            if (currentSetupStep == 3) {
-                recordBtn->setText("开始创作");
-            } else {
-                recordBtn->setText("开始录制");
-            }
-            updateRecordingStatusOverlay();
-            if (videoWriter) {
-                delete videoWriter;
-                videoWriter = nullptr;
-            }
-            return;
-        }
-        
-    } else {
-        // ========== 停止录制 ==========
-        isRecording = false;
-        if (currentSetupStep == 3) {
-            recordBtn->setText("开始创作");
-        } else {
-            recordBtn->setText("开始录制");
-        }
-        updateRecordingStatusOverlay();
-        // 释放视频写入器
-        if (videoWriter) {
-            videoWriter->release();
-            delete videoWriter;
-            videoWriter = nullptr;
-        }
-        audioRec->saveAudio();
-        startMix(savePath);
-        qDebug() << "录制已停止，开始混合音视频：" << savePath << '\n';
-    }
-}
-
-
 
 void BackgroundReplaceWindow::addImages()
 {
@@ -1471,49 +1499,102 @@ void BackgroundReplaceWindow::toggleCamera()
 {
     if (timer->isActive()) {
         timer->stop();
-        if (camera != nullptr) {
+        isFrameFrozen = false;
+        frozenFrameImage = QImage();
+        frozenImagePath.clear();
+        latestOutputFrame.release();
+        if (camera) {
             camera->release();
-            delete camera;
-            camera = nullptr;
         }
         btnCamera->setText("启动摄像头");
         cameraLabel->clear();
         fpsLabel->setText("FPS: 0.0");
         frameTimes.clear();
         currentFPS = 0.0f;
-        updateRecordingStatusOverlay();
+        freezeBtn->setText("冻结并截图");
+        comboBox->setEnabled(true);
+        resolutionCombo->setEnabled(true);
+        updatePreviewStatusOverlay();
     } else {
-        camera = new cv::VideoCapture(comboBox->currentIndex());
-        if (!camera->isOpened()) {
-            QMessageBox::critical(this, "错误", "无法打开摄像头！");
+        if (cameraDeviceNames.isEmpty() || comboBox->currentIndex() < 0) {
+            QMessageBox::critical(this, "错误", "未检测到可用摄像头！");
             return;
         }
-        camWidth = static_cast<int>(camera->get(cv::CAP_PROP_FRAME_WIDTH));
-        camHeight = static_cast<int>(camera->get(cv::CAP_PROP_FRAME_HEIGHT));
-        camera->set(cv::CAP_PROP_FRAME_WIDTH, camWidth);
-        camera->set(cv::CAP_PROP_FRAME_HEIGHT, camHeight);
+
+        if (!camera) {
+            camera = new FfmpegCamera();
+        }
+
+        const QString deviceName = cameraDeviceNames.value(comboBox->currentIndex());
+        const QSize requested = resolutionCombo->currentData().toSize();
+
+        // 在阻塞 open 之前刷新一下 UI，让"正在启动..."能立刻显示出来。
+        // Windows 下打开 USB 摄像头单次就要 1–3 秒，没有反馈的话像卡死。
+        btnCamera->setEnabled(false);
+        btnCamera->setText("正在启动...");
+        comboBox->setEnabled(false);
+        resolutionCombo->setEnabled(false);
+        QApplication::setOverrideCursor(Qt::WaitCursor);
+        QApplication::processEvents();
+
+        QString openError;
+        const bool opened = camera->open(
+            deviceName,
+            requested.isValid() ? requested.width() : 1280,
+            requested.isValid() ? requested.height() : 720,
+            30,
+            &openError);
+
+        if (!opened) {
+            QApplication::restoreOverrideCursor();
+            btnCamera->setEnabled(true);
+            btnCamera->setText("启动摄像头");
+            comboBox->setEnabled(true);
+            resolutionCombo->setEnabled(true);
+            QMessageBox::critical(this, "错误", openError.isEmpty() ? "无法打开摄像头！" : openError);
+            return;
+        }
+        QApplication::restoreOverrideCursor();
+
+        camWidth = camera->width();
+        camHeight = camera->height();
+
+        if (requested.isValid() &&
+            (camWidth != requested.width() || camHeight != requested.height())) {
+            QMessageBox::information(
+                this, "提示",
+                QString("摄像头不支持 %1x%2，已回退为 %3x%4")
+                    .arg(requested.width()).arg(requested.height())
+                    .arg(camWidth).arg(camHeight));
+        }
+
         updateCameraPreviewSize(camWidth, camHeight);
-        timer->start(22);
+        // 用 0ms 让定时器在事件循环空闲时立即重排：实际帧率由相机读取+推理决定，不再被 22ms 硬上限卡住
+        timer->start(0);
+        btnCamera->setEnabled(true);
         btnCamera->setText("停止摄像头");
-        
+
         // Reset FPS calculation
         frameTimes.clear();
         currentFPS = 0.0f;
     }
 }
-QString BackgroundReplaceWindow::extractDirPathQt(const QString& fullPath) {
-    if (fullPath.isEmpty()) {
-        return "./";
-    }
-    // QFileInfo：解析文件路径的工具类
-    QFileInfo fileInfo(fullPath);
-    // absolutePath()：获取目录路径（无末尾分隔符），再用QDir补充分隔符
-    QString dirPath = QDir(fileInfo.absolutePath()).absolutePath() + QDir::separator();
-    return dirPath;
-}
+
 void BackgroundReplaceWindow::updateFrame()
 {
     if (!camera || !camera->isOpened()) {
+        return;
+    }
+
+    if (isFrameFrozen) {
+        if (!frozenFrameImage.isNull()) {
+            cameraLabel->setPixmap(QPixmap::fromImage(frozenFrameImage).scaled(
+                cameraLabel->size(),
+                Qt::KeepAspectRatio,
+                Qt::SmoothTransformation
+            ));
+        }
+        updatePreviewStatusOverlay();
         return;
     }
 
@@ -1551,71 +1632,42 @@ void BackgroundReplaceWindow::updateFrame()
             }
         }
     }
-
     drawForeground(outputFrame);
 
-    if (isRecording && videoWriter) {
-        // 检查帧是否有效
-        if (!outputFrame.empty() && outputFrame.cols > 0 && outputFrame.rows > 0) {
-            cv::Mat writeFrame;
-            
-            // 将帧调整为640x480以匹配VideoWriter的配置
-            cv::resize(outputFrame, writeFrame, cv::Size(640, 480));
-            
-            // 确保帧格式正确 (BGR格式)
-            if (writeFrame.channels() == 3) {
-                // 计算理论上应该写入多少帧 (根据录制时长和设定的FPS)
-                qint64 elapsedMs = QDateTime::currentMSecsSinceEpoch() - recordStartTime;
-                int expectedFrames = static_cast<int>(elapsedMs * RECORD_FPS / 1000.0);
-                
-                // 补齐或跳过帧以保持音画同步
-                while (writtenFrames < expectedFrames) {
-                    videoWriter->write(writeFrame);
-                    writtenFrames++;
-                }
-            } else {
-                qDebug() << "警告：帧格式不正确，跳过此帧录制" << '\n';
-            }
-        } else {
-            qDebug() << "警告：输出帧为空，跳过录制" << '\n';
-        }
-
+    // 分割路径返回的是新分配的 Mat，可以浅拷贝；
+    // 无分割路径下 outputFrame 还指向相机内部缓冲，必须 clone，否则下一次 read 会改写其数据
+    if (outputFrame.data == frame.data) {
+        latestOutputFrame = outputFrame.clone();
+    } else {
+        latestOutputFrame = outputFrame;
     }
 
-    cv::Mat rgbFrame;
-    cv::cvtColor(outputFrame, rgbFrame, cv::COLOR_BGR2RGB);
+    // 直接用 BGR888 喂给 QImage，省掉一次整图 cvtColor
+    QImage qtImage(outputFrame.data,
+                   outputFrame.cols,
+                   outputFrame.rows,
+                   static_cast<int>(outputFrame.step),
+                   QImage::Format_BGR888);
 
-    QImage qtImage(rgbFrame.data,
-                   rgbFrame.cols,
-                   rgbFrame.rows,
-                   rgbFrame.step,
-                   QImage::Format_RGB888);
-
+    // 实时预览用 FastTransformation：肉眼几乎无差，但缩放成本远低于 SmoothTransformation
     QPixmap scaledPixmap = QPixmap::fromImage(qtImage).scaled(
         cameraLabel->size(),
         Qt::KeepAspectRatio,
-        Qt::SmoothTransformation
+        Qt::FastTransformation
         );
 
     cameraLabel->setPixmap(scaledPixmap);
 
-    // FPS calculation - 使用滑动时间窗口
+    // FPS：3 秒滑动时间窗口
     qint64 currentTime = QDateTime::currentMSecsSinceEpoch();
     frameTimes.push_back(currentTime);
-
-    // 移除3秒前的旧时间戳
     while (!frameTimes.empty() && (currentTime - frameTimes.front()) > TIME_WINDOW_MS) {
         frameTimes.erase(frameTimes.begin());
     }
+    currentFPS = static_cast<float>(frameTimes.size()) / (TIME_WINDOW_MS / 1000.0f);
 
-    // 计算当前时间窗口内的FPS
-    int frameCount = frameTimes.size();
-    float timeWindowSec = TIME_WINDOW_MS / 1000.0f;
-    currentFPS = static_cast<float>(frameCount) / timeWindowSec;
-
-    // 更新显示
     fpsLabel->setText(QString("FPS: %1").arg(currentFPS, 0, 'f', 1));
-    updateRecordingStatusOverlay();
+    updatePreviewStatusOverlay();
 }
 
 void BackgroundReplaceWindow::closeEvent(QCloseEvent *event)
@@ -1629,17 +1681,6 @@ void BackgroundReplaceWindow::closeEvent(QCloseEvent *event)
     if (carouselTimer->isActive()) {
         carouselTimer->stop();
          qDebug() << "轮播定时器已停止" << '\n';
-    }
-
-    if (isRecording) {
-        isRecording = false;
-        updateRecordingStatusOverlay();
-        if (videoWriter) {
-            videoWriter->release();
-            delete videoWriter;
-            videoWriter = nullptr;
-        }
-        qDebug() << "录制资源已释放" << '\n';
     }
 
     try {
@@ -1663,84 +1704,12 @@ void BackgroundReplaceWindow::closeEvent(QCloseEvent *event)
 
     event->accept();
 }
-void BackgroundReplaceWindow::startMix(QString inputPath)
+
+void BackgroundReplaceWindow::detectCameras()
 {
-    QString basePath=extractDirPathQt(inputPath);
-    QString ffmpegPath = "ffmpeg-master-latest-win64-gpl-shared/bin/ffmpeg.exe";
-    // 构造 FFmpeg 命令（替换视频音频，裁剪到最短时长）
-    QStringList args;
-    args << "-i" <<  (inputPath.back() == '4' ? basePath+"tempVideo.mp4" : basePath+"tempVideo.avi") // 输入视频
-         << "-i" <<  basePath+"tempAudio.mp4a"     // 输入音频
-         << "-map" << "0:v"              // 选择视频流
-         << "-map" << "1:a"              // 选择音频流
-         << "-c:v" << "copy"             // 视频拷贝
-         << "-c:a" << "aac"              // 音频编码为 AAC
-         << "-shortest"                  // 裁剪到最短时长
-         << "-y"                         // 覆盖已有文件
-         << inputPath;                  // 输出文件
-    // 启动 FFmpeg 进程
-    QProcess *ffmpegProcess = new QProcess();
-    connect(ffmpegProcess, &QProcess::finished, this, [=](int exitCode, QProcess::ExitStatus exitStatus) {
-        if (exitCode == 0) {
-            qDebug()<<"混合成功！";
-            QFile videoFile( (inputPath.back() == '4' ? basePath+"tempVideo.mp4" : basePath+"tempVideo.avi"));
-            QFile audioFile(basePath+"tempAudio.mp4a");
-
-            // 视频文件删除
-            if (videoFile.exists()) {
-                if (!videoFile.remove()) {
-                    QMessageBox::warning(this, "提示",
-                                         "视频文件删除失败");
-                }
-            }
-
-            // 音频文件删除
-            if (audioFile.exists()) {
-                if (!audioFile.remove()) {
-                    QMessageBox::warning(this, "提示",
-                                         "音频文件删除失败：");
-                }
-            }
-
-            QString fullPath = QFileInfo(inputPath).absoluteFilePath();
-            QMessageBox::StandardButton reply = QMessageBox::question(
-                this, "成功", 
-                QString("录制成功！是否现在打开视频所在目录？\n%1").arg(fullPath),
-                QMessageBox::Yes | QMessageBox::No
-            );
-            if (reply == QMessageBox::Yes) {
-                QString dirPath = QFileInfo(fullPath).absolutePath();
-                QDesktopServices::openUrl(QUrl::fromLocalFile(dirPath));
-            }
-        } else {
-            // 输出错误信息
-            QString error = ffmpegProcess->readAllStandardError();
-            qDebug()<<"----MiX-ERROR----\n"<<error;
-        }
-        ffmpegProcess->deleteLater();
-    });
-
-    // 启动进程
-    ffmpegProcess->start(ffmpegPath, args);
-
-    // 检查 FFmpeg 是否启动成功
-    if (!ffmpegProcess->waitForStarted(3000)) {
-        QMessageBox::critical(this, "错误", "无法启动 FFmpeg，请检查路径是否正确！");
-        ffmpegProcess->deleteLater();
+    QString errorMessage;
+    cameraDeviceNames = FfmpegCamera::listVideoDevices(&errorMessage);
+    if (cameraDeviceNames.isEmpty() && !errorMessage.isEmpty()) {
+        qDebug() << errorMessage;
     }
-}
-int BackgroundReplaceWindow::detectCamera()
-{
-    int i = 0;
-    while (true) {
-        cv::VideoCapture cap(i, cv::CAP_DSHOW);
-        if (cap.isOpened()) {
-            cap.release();
-            i++;
-        } else {
-            cap.release();
-            break;
-        }
-    }
-    return i;
 }

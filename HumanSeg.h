@@ -103,8 +103,9 @@ private:
     // ONNX Runtime 相关
     std::unique_ptr<Ort::Session> ort_session;
     Ort::Env env{OrtLoggingLevel::ORT_LOGGING_LEVEL_WARNING, "HumanSeg"};
+    Ort::MemoryInfo memory_info{Ort::MemoryInfo::CreateCpu(OrtDeviceAllocator, OrtMemTypeCPU)};
     float conf_threshold;
-    int input_height = 192;  // MODNet输入高度
+    int input_height = 384;  // MODNet输入高度
     int input_width = 384;   // MODNet输入宽度
 
     // 预处理参数
@@ -115,6 +116,9 @@ private:
     std::string bg_type;
     cv::Mat bg_image;
     cv::VideoCapture bg_video;
+    cv::Mat bg_resized_cache;
+    int cached_bg_w = -1;
+    int cached_bg_h = -1;
 
     // 基础文字绘制相关（仅ASCII）
     std::string title = ""; // 默认ASCII文字

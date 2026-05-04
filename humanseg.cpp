@@ -4,6 +4,8 @@
 #include <algorithm>
 #include <numeric>
 #include <thread>
+#include <array>
+#include <opencv2/dnn.hpp>
 HumanSeg::HumanSeg(float conf_thres) : conf_threshold(conf_thres) {
     // 初始化均值和标准差
     mean = (cv::Mat_<float>(1, 3) << 0.5, 0.5, 0.5);
@@ -56,14 +58,21 @@ HumanSeg::~HumanSeg() {
 // 设置背景（支持中文路径）
 void HumanSeg::setBackground(const std::string& bg_path, const std::string& bg_type) {
     this->bg_type = bg_type;
+    bg_resized_cache.release();
+    cached_bg_w = -1;
+    cached_bg_h = -1;
 
     if (bg_type == "image") {
         bg_image = imreadChinese(bg_path);
         if (bg_image.empty()) {
             throw std::runtime_error("bg picture-->" + bg_path + "-->cannot load!");
         }
+        if (bg_image.channels() == 4) {
+            cv::cvtColor(bg_image, bg_image, cv::COLOR_BGRA2BGR);
+        } else if (bg_image.channels() == 1) {
+            cv::cvtColor(bg_image, bg_image, cv::COLOR_GRAY2BGR);
+        }
     } else if (bg_type == "video") {
-        // 视频路径转宽字符（支持中文）
         std::string w_bg_path(bg_path.begin(), bg_path.end());
         bg_video.open(w_bg_path);
         if (!bg_video.isOpened()) {
@@ -74,15 +83,18 @@ void HumanSeg::setBackground(const std::string& bg_path, const std::string& bg_t
     }
 }
 
-// 获取适配尺寸的背景帧
+// 获取适配尺寸的背景帧（图片背景命中尺寸缓存，避免每帧 resize）
 cv::Mat HumanSeg::getBgFrame(const std::pair<int, int>& target_size) {
     int target_h = target_size.first;
     int target_w = target_size.second;
 
     if (bg_type == "image") {
-        cv::Mat resized;
-        cv::resize(bg_image, resized, cv::Size(target_w, target_h));
-        return resized;
+        if (target_w != cached_bg_w || target_h != cached_bg_h || bg_resized_cache.empty()) {
+            cv::resize(bg_image, bg_resized_cache, cv::Size(target_w, target_h));
+            cached_bg_w = target_w;
+            cached_bg_h = target_h;
+        }
+        return bg_resized_cache;
     } else if (bg_type == "video") {
         cv::Mat frame;
         bool ret = bg_video.read(frame);
@@ -101,94 +113,65 @@ cv::Mat HumanSeg::getBgFrame(const std::pair<int, int>& target_size) {
     }
 }
 
-// 核心：分割+背景替换+基础文字绘制（cv::putText）
+// 核心：分割+背景替换+基础文字绘制
 cv::Mat HumanSeg::segmentAndReplace(const cv::Mat& frame) {
     if (frame.empty()) {
         throw std::invalid_argument("input frame is empty!");
     }
 
-    // 1. 预处理：缩放+转RGB+归一化
-    cv::Mat input_frame;
-    cv::resize(frame, input_frame, cv::Size(input_width, input_height));
-    cv::cvtColor(input_frame, input_frame, cv::COLOR_BGR2RGB);
+    // 1. 预处理：BGR->RGB + resize + (x-127.5)/127.5 + HWC->NCHW
+    //    blobFromImage 内部走 SIMD，比手写循环快一个数量级
+    cv::Mat blob = cv::dnn::blobFromImage(
+        frame,
+        1.0 / 127.5,
+        cv::Size(input_width, input_height),
+        cv::Scalar(127.5, 127.5, 127.5),
+        true,
+        false,
+        CV_32F
+        );
 
-    // 归一化到[0,1]
-    input_frame.convertTo(input_frame, CV_32F);
-    input_frame /= 255.0f;
-
-    // 减均值/除标准差
-    for (int c = 0; c < 3; ++c) {
-        input_frame.forEach<cv::Vec3f>([c, this](cv::Vec3f& pixel, const int*) {
-            pixel[c] = (pixel[c] - mean.at<float>(0, c)) / std.at<float>(0, c);
-        });
-    }
-
-    // 2. 转换为NCHW格式的输入张量
-    std::vector<int64_t> input_shape = {1, 3, input_height, input_width};
-    size_t input_size = 1 * 3 * input_height * input_width;
-    std::vector<float> input_tensor(input_size);
-
-    // HWC -> CHW
-    int idx = 0;
-    for (int c = 0; c < 3; ++c) {
-        for (int h = 0; h < input_height; ++h) {
-            for (int w = 0; w < input_width; ++w) {
-                input_tensor[idx++] = input_frame.at<cv::Vec3f>(h, w)[c];
-            }
-        }
-    }
-
-    // 3. ONNX推理
-    Ort::AllocatorWithDefaultOptions allocator;
-    // 显式指定输入输出名称（MODNet官方模型）
-    const char* input_name = "input";
-    const char* output_name = "output";
-
-    // 创建输入张量
-    Ort::MemoryInfo memory_info = Ort::MemoryInfo::CreateCpu(OrtDeviceAllocator, OrtMemTypeCPU);
+    // 2. ONNX 推理（复用 memory_info）
+    std::array<int64_t, 4> input_shape = {1, 3, input_height, input_width};
     Ort::Value input_tensor_obj = Ort::Value::CreateTensor<float>(
-        memory_info, input_tensor.data(), input_tensor.size(),
+        memory_info,
+        reinterpret_cast<float*>(blob.data),
+        static_cast<size_t>(blob.total()),
         input_shape.data(), input_shape.size()
         );
 
-    // 执行推理
+    const char* input_name = "input";
+    const char* output_name = "output";
     std::vector<Ort::Value> output_tensors = ort_session->Run(
         Ort::RunOptions{nullptr},
         &input_name, &input_tensor_obj, 1,
         &output_name, 1
         );
 
-    // 5. 生成二值掩码
+    // 3. 掩码：384x384 float -> 原图尺寸 8U(0/255)
     float* seg_data = output_tensors[0].GetTensorMutableData<float>();
     cv::Mat seg_map(input_height, input_width, CV_32F, seg_data);
 
-    // 缩放掩码到原帧尺寸
     cv::Mat seg_map_resized;
     cv::resize(seg_map, seg_map_resized, cv::Size(frame.cols, frame.rows), 0, 0, cv::INTER_LINEAR);
 
-    // 修正：掩码归一化到 0-255（CV_8U）
+    // 一次扫描把 CV_32F 概率图转成 CV_8U 二值掩码（>conf 为 255，否则 0），
+    // 比原先 threshold + convertTo 两次扫描更快。
     cv::Mat person_mask;
-    cv::threshold(seg_map_resized, person_mask, conf_threshold, 255.0, cv::THRESH_BINARY); // 关键：255而非1
-    person_mask.convertTo(person_mask, CV_8U); // 现在掩码是 0/255
-    cv::Mat person_mask_3ch;
-    cv::cvtColor(person_mask, person_mask_3ch, cv::COLOR_GRAY2BGR);
+    cv::compare(seg_map_resized, conf_threshold, person_mask, cv::CMP_GT);
 
-    // 6. 背景替换
+    // 4. 取背景（图片背景命中缓存，clone 避免污染缓存）
     cv::Mat bg_frame = getBgFrame({frame.rows, frame.cols});
-    if (bg_frame.channels() == 4) {
-        cv::cvtColor(bg_frame, bg_frame, cv::COLOR_BGRA2BGR);
-    } else if (bg_frame.channels() == 1) {
-        cv::cvtColor(bg_frame, bg_frame, cv::COLOR_GRAY2BGR);
-    }
+    cv::Mat output_frame = bg_frame.clone();
 
-    // 修正：人像区域保留原帧，背景区域替换为背景帧
-    cv::Mat output_frame;
-    cv::bitwise_and(frame, person_mask_3ch, output_frame); // 人像区域（255）保留原帧，背景（0）为黑
-    cv::Mat bg_part;
-    cv::bitwise_and(bg_frame, ~person_mask_3ch, bg_part);  // 背景区域（~0=255）保留背景帧，人像（~255=0）为黑
-    cv::add(output_frame, bg_part, output_frame); // 叠加后：人像+新背景
+    // 5. 单次合成：把人像像素直接拷到背景上（一次扫描，零额外临时图）
+    frame.copyTo(output_frame, person_mask);
+
     if (!title.empty()) {
-        putText::putTextZH(output_frame,title.c_str(),Point(titleX,titleY),Scalar(std::get<2>(rgb), std::get<1>(rgb), std::get<0>(rgb)),font_size,font_name.c_str());
+        putText::putTextZH(
+            output_frame, title.c_str(), Point(titleX, titleY),
+            Scalar(std::get<2>(rgb), std::get<1>(rgb), std::get<0>(rgb)),
+            font_size, font_name.c_str());
     }
 
     return output_frame;
