@@ -1,5 +1,12 @@
 <RCC>
     <qresource prefix="/">
         <file>icon.png</file>
+        <file>one.png</file>
+        <file>two.png</file>
+        <file>index_bg.jpg</file>
+        <file>bg.jpg</file>
+        <file>btn_start_use.png</file>
+        <file>btn_start_use_hover.png</file>
+        <file>btn_start_use_clicked.png</file>
     </qresource>
 </RCC>

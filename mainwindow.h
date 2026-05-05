@@ -16,13 +16,10 @@
 #include <QListWidget>
 #include <QListWidgetItem>
 #include <QComboBox>
-#include <QPlainTextEdit>
-#include <QFontComboBox>
 #include <QLineEdit>
 #include <QCheckBox>
 #include <QStackedLayout>
 #include <QStackedWidget>
-#include <QColorDialog>
 #include <QTimer>
 #include <QDateTime>
 #include <QImage>
@@ -49,25 +46,14 @@ public:
 
 private slots:
     void updateFrame();
-    void printTimeUp();
     void updateConf();
     void toggleCamera();
-    void onImageItemClicked(QListWidgetItem *item);
-    void setCarouselInterval(int interval);
-    void onTextChanged(const QString &text);
-    void onPosXChanged(int value);
-    void onPosYChanged(int value);
-    void onFontSizeChanged(int value);
-    void chooseColor();
     void addImages();
-    void addVideo();
     void addFgImage();
     void clearFgImage();
     void chooseSaveDirectory();
     void updateFgScale(int value);
     void updateFgOpacity(int value);
-    void deleteSelectedImage();
-    void clearAllImages();
 protected:
     void keyPressEvent(QKeyEvent *event) override;
 
@@ -79,11 +65,9 @@ private:
     void showSetupStep(int step);
     void finishSetupFlow();
     void returnToBackgroundSetup();
+    void goBackFromEscape();
 
-    void updateTextPreview();
     void updateFgPreview();
-    void onTextAlignChanged(int align);
-    QWidget* createWizardHeader();
     void closeEvent(QCloseEvent *event) override;
     void detectCameras();
     void drawForeground(cv::Mat &frame);
@@ -100,25 +84,13 @@ private:
     HumanSeg *segmentor;
     FfmpegCamera *camera;
     QTimer *timer;
-    QTimer *carouselTimer;
 
     // UI elements
     QStackedWidget *rootStackedWidget;
     QWidget *titleScreenWidget;
-    QWidget *bgTypeSelectionWidget;
     QWidget *bgImageSetupWidget;
-    QWidget *bgVideoSetupWidget;
 
-    QWidget *textSetupWidget;
     QWidget *fgSetupWidget;
-    
-    QRadioButton *radioNoText;
-    QRadioButton *radioText;
-    QWidget *textConfigPanel;
-    QLabel *textPreviewLabel;
-    QButtonGroup *textAlignGroup;
-    int textAlign; // 0: left, 1: center, 2: right
-    QPushButton *colorBtn;
 
     QRadioButton *radioNoFg;
     QRadioButton *radioFg;
@@ -128,10 +100,6 @@ private:
     QSpinBox *fgPosXInput;
     QSpinBox *fgPosYInput;
     
-    QCheckBox *chkEnableCarousel;
-    QLabel *videoNameLabel;
-    QLabel *videoPreviewLabel;
-
     QWidget *centralWidget;
     QHBoxLayout *mainLayout;
     QWidget *camWidget;
@@ -139,7 +107,7 @@ private:
     QGroupBox *cameraGroupBox;
     QGroupBox *controlGroupBox;
     QGroupBox *cameraControlGroupBox;
-    QGroupBox *textSettingsGroupBox;
+    QGroupBox *peopleSettingsGroupBox;
     QGroupBox *fgSettingsGroupBox;
     QGroupBox *creationSettingsGroupBox;
     QStackedLayout *previewStackLayout;
@@ -152,27 +120,18 @@ private:
     QPushButton *setupPrevBtn;
     QPushButton *setupNextBtn;
     QPushButton *btnAddImages;
-    QPushButton *btnAddVideo;
-    QPushButton *btnDeleteImage;
-    QPushButton *btnClearImages;
     QSlider *confSlider;
-    QSpinBox *intervalSpinBox;
     QGroupBox *listGroup;
-    QListWidget *imageListWidget;
     ImagePreviewWidget *imagePreviewWidget;
-    QRadioButton *radioImg;
-    QRadioButton *radioVideo;
-    QButtonGroup *bgTypeGroup;
     QComboBox *comboBox;
     QComboBox *resolutionCombo;
-    QPlainTextEdit *titleInputBox;
-    QLineEdit *fontInputBox;
     QLineEdit *saveDirInput;
     QPushButton *btnBrowseSaveDir;
     QPushButton *btnOpenSaveDir;
-    QSpinBox *posXInput;
-    QSpinBox *posYInput;
-    QSpinBox *fsInput;
+
+    QRadioButton *radioOnePerson;
+    QRadioButton *radioTwoPerson;
+    QButtonGroup *peopleGroup;
 
     QPushButton *btnAddFgImage;
     QPushButton *btnClearFgImage;
@@ -186,9 +145,6 @@ private:
     double fgScale;
     double fgOpacity;
 
-    std::vector<std::string> imagePaths;
-    int imgIndex;
-    int carouselInterval;
     bool isPreviewFullScreen;
     bool isFrameFrozen;
     int cameraIndex;
@@ -196,6 +152,7 @@ private:
     int camWidth;
     int camHeight;
     int currentSetupStep;
+    QString selectedImagePath;
     QString currentBgPath;
     QString frozenImagePath;
     cv::Mat latestOutputFrame;

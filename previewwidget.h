@@ -5,6 +5,7 @@
 #include <QVBoxLayout>
 #include <QLabel>
 #include <QScrollArea>
+#include <QPixmap>
 #include <QSize>
 #include <QString>
 
@@ -20,10 +21,15 @@ public:
     QString getCurrentImagePath() const { return currentImagePath; }
     void setInfoText(const QString &text) { infoLabel->setText(text); }
 
+protected:
+    void resizeEvent(QResizeEvent *event) override;
+
 private:
     void initUI();
+    void updateScaledPixmap();
 
     QString currentImagePath;
+    QPixmap originalPixmap;
     QScrollArea *scrollArea;
     QLabel *imageLabel;
     QLabel *infoLabel;
